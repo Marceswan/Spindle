@@ -1,0 +1,6 @@
+<aura:component controller="AccountService" implements="force:appHostable">
+    <aura:attribute name="recordId" type="String" />
+    <aura:dependency resource="markup://c:customerCard" />
+    <c:customerCard recordId="{!v.recordId}" />
+    <lightning:button label="Run cleanup" onclick="{!c.handleCleanup}" />
+</aura:component>

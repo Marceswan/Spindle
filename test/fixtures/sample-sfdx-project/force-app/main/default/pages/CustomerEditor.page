@@ -1,0 +1,13 @@
+<apex:page controller="AccountService" extensions="Orchestrator" sidebar="false" showHeader="true">
+    <apex:form>
+        <apex:pageBlock title="Customer">
+            <apex:pageBlockSection columns="1">
+                <apex:inputField value="{!Customer__c.Email__c}" />
+                <apex:inputField value="{!Customer__c.Tier__c}" />
+            </apex:pageBlockSection>
+            <apex:pageBlockButtons>
+                <apex:commandButton action="{!cleanup}" value="Cleanup" />
+            </apex:pageBlockButtons>
+        </apex:pageBlock>
+    </apex:form>
+</apex:page>

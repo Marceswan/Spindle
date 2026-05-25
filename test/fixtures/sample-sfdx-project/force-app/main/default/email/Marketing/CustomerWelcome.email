@@ -1,0 +1,8 @@
+Hello {!Customer__c.Name},
+
+Thank you for joining us! Your tier has been set to {!Customer__c.Tier__c} and we have your
+contact email on file as {!Customer__c.Email__c}.
+
+{!$Label.Greeting}
+
+— The Customer Success Team

@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+# bun.lock and bun.lockb are committed for reproducible installs.
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Graph database (per-project default location)
+.sfdx-graph/
+
+# Salesforce CLI local cache (gets created if anyone runs `sf` inside a fixture)
+.sfdx/
+.sf/
+
+# Logs
+*.log
+.cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Test artifacts
+coverage/

@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Development shim. Runs the TypeScript CLI under Bun.
+# In a release build, this shim is replaced by the compiled binary itself.
+exec bun run "$(dirname "$0")/../src/cli.ts" "$@"
