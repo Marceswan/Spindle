@@ -1349,3 +1349,32 @@ The two products are complementary, not competing. A polyglot org could run both
 - **Qualified name**: the globally unique identifier for a node within the graph.
 - **SObject**: a Salesforce standard or custom object.
 - **Spindle**: the placeholder product name; subject to renaming.
+
+## 19. September 2026: shared service and compact search (implemented)
+
+This section supersedes the earlier per-process stdio ownership and detached watcher
+lifecycle descriptions. `src/server.ts` is now a thin MCP adapter using authenticated
+local RPC. `src/service/host.ts` owns the graph database, tool registry, one watcher
+per canonical project root, and a serialized work queue. `src/service/client.ts`
+locates or launches the service. MCP clients, CLI indexing and session hooks all use
+this path. Singleton scope is the canonical database path; explicit different database
+paths remain separate services. Existing graph schema and parser output are unchanged.
+
+A dedicated SQLite database holds `BEGIN IMMEDIATE` for the service lifetime. This
+lock is not a PID heuristic and is released by the OS after a crash. Its file must
+never be unlinked during normal operation. Random-token loopback IPC discovery is
+written atomically with mode 0600. A protocol number is checked during connection.
+Last-client disconnect initiates shutdown after a one-second grace period: stop
+intake/timers, drain operations, close watchers/sockets/store, release ownership.
+MCP stdin EOF and signals disconnect the corresponding adapter. SessionEnd hooks
+are no longer installed; old stop-watch commands do not stop shared work.
+
+`search_graph` adds `detail` (`compact` default, `full` optional), `offset`, a maximum
+page size of 500, `has_more`, and `next_offset`. Compact nodes preserve label, name,
+qualifiedName, filePath, startLine and endLine. Full detail preserves StoredNode.
+Filtering precedes pagination and streams through candidates without the old
+pre-filter fetch cap. MCP text payloads use compact JSON. Clients must page until
+has_more is false before treating a search result as complete for the current index.
+
+See `docs/optimization-notes.md` for the upstream revision reviewed, repeatable
+measurements, verification scope, and explicitly deferred work.

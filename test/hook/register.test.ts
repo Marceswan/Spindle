@@ -26,22 +26,30 @@ describe("registerHook", () => {
     try { rmSync(settingsPath, { force: true }); } catch { /* ignore */ }
   });
 
-  test("creates settings.json and writes both hooks", () => {
+  test("creates settings.json with SessionStart; shared clients own shutdown", () => {
     const result = registerHook({ settingsPath, binary: "/opt/spindle/sfdx-graph-mcp" });
     expect(result.changed).toBe(true);
     expect(existsSync(settingsPath)).toBe(true);
 
     const json = readJson(settingsPath) as { hooks: { SessionStart: unknown[]; SessionEnd: unknown[] } };
     expect(Array.isArray(json.hooks.SessionStart)).toBe(true);
-    expect(Array.isArray(json.hooks.SessionEnd)).toBe(true);
+    expect(json.hooks.SessionEnd).toBeUndefined();
 
     // SessionStart entry has no matcher so it fires on all subtypes (startup/resume/clear/compact).
     const start = json.hooks.SessionStart[0] as { matcher?: string; hooks: { command: string }[] };
     expect(start.matcher).toBeUndefined();
     expect(start.hooks[0]?.command).toContain("session-start-hook");
 
-    const end = json.hooks.SessionEnd[0] as { hooks: { command: string }[] };
-    expect(end.hooks[0]?.command).toContain("stop-watch");
+  });
+
+  test("removes legacy SessionEnd stop-watch without touching other hooks", () => {
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionEnd: [{ hooks: [
+      { type: "command", command: "/old/sfdx-graph-mcp stop-watch" },
+      { type: "command", command: "echo unrelated" },
+    ] }] } }));
+    registerHook({ settingsPath, binary: "/opt/spindle/sfdx-graph-mcp" });
+    const json = readJson(settingsPath) as { hooks: { SessionEnd: { hooks: { command: string }[] }[] } };
+    expect(json.hooks.SessionEnd[0]!.hooks.map(h => h.command)).toEqual(["echo unrelated"]);
   });
 
   test("preserves unrelated settings", () => {

@@ -27,6 +27,20 @@ Spindle indexes the project once into SQLite (~600ms for a 100-class project), t
 
 ---
 
+## Agent output and shared service
+
+Search now returns compact symbol evidence by default, with `detail: "full"` for
+parser properties and `has_more` / `next_offset` for complete pagination. On the same
+50-class result page, the included benchmark measures 67.1% fewer output bytes.
+
+All MCP clients, CLI indexing and SessionStart hooks share one local graph service
+per database. Each stdio client keeps a thin adapter; the service owns the database
+and one watcher per project. It shuts down after the final client disconnects and
+recovers singleton ownership after crashes. No configuration change is needed for
+existing stdio clients. `register-hook` removes obsolete SessionEnd stop-watch hooks.
+
+See [implementation, upstream comparison, measurements and limitations](docs/optimization-notes.md).
+
 ## Quick start
 
 ### One-line install (once a release is tagged)
@@ -67,7 +81,7 @@ bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 sfdx-graph-mcp index /path/to/your/sfdx-project --full
 ```
 
-This writes `<project>/.sfdx-graph/graph.db`. Add it to your project's `.gitignore`.
+The shared database defaults to `~/.cache/sfdx-graph-mcp/graph.db`. Set `SFDX_GRAPH_HOME` to share a different database directory across clients, or pass `--db-path` to isolate a CLI run.
 
 To run a continuously-updated graph during active development, add `--watch`:
 
@@ -75,7 +89,7 @@ To run a continuously-updated graph during active development, add `--watch`:
 sfdx-graph-mcp index /path/to/your/sfdx-project --watch
 ```
 
-Spindle does an initial index, then attaches a `chokidar` watcher. File changes are debounced 300ms and trigger an incremental reindex (typically 20-50ms per changed file). Ctrl+C shuts down cleanly.
+Spindle indexes through the shared service, which owns a single `chokidar` watcher per project. File changes are debounced 300ms and trigger an incremental reindex (typically 20-50ms per changed file). Ctrl+C shuts down cleanly.
 
 ### Configure as an MCP server in Claude Code
 

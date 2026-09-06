@@ -1,5 +1,5 @@
 // SessionStart hook implementation. Detects an SFDX project at the resolved working
-// directory and runs an incremental index against the shared graph store so the MCP
+// directory and requests an incremental index from the shared service so the MCP
 // server's read tools see fresh data on the first query.
 //
 // Contract per https://code.claude.com/docs/en/hooks:
@@ -13,21 +13,14 @@
 //   - Diagnostic log at `<db-dir>/hook.log` is appended on EVERY invocation regardless
 //     of detection outcome — that's the user-visible proof the hook fired. `tail` it.
 
-import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { execPath } from "node:process";
 
-import { GraphStore } from "../graph/store.ts";
-import { indexProject } from "../pipeline/index-project.ts";
+import { connectService } from "../service/client.ts";
 import { getDefaultDbDir, getDefaultDbPath } from "../util/db-path.ts";
 import { logger } from "../util/logger.ts";
-import {
-  getPidFilePath,
-  isPidAlive,
-  readPidFile,
-} from "./watch-control.ts";
+
 
 const SFDX_SOURCE_EXTENSIONS = new Set([".cls", ".trigger", ".cmp", ".app", ".page", ".vfp"]);
 const SHALLOW_PROBE_MAX_DEPTH = 4;
@@ -83,31 +76,19 @@ async function runInner(cwd: string, _source: string): Promise<HookResult> {
   }
 
   const projectRoot = detection.projectRoot;
-  const dbPath = getDefaultDbPath();
-  await mkdir(dirname(dbPath), { recursive: true });
-
-  const store = new GraphStore(dbPath);
-  let indexResult;
+  const client = await connectService(getDefaultDbPath());
   try {
-    indexResult = await indexProject(projectRoot, store, { mode: "incremental" });
+    const result = await client.request("call", { name: "index_project", arguments: { project_root: projectRoot } }) as {
+      files_parsed: number; nodes_written: number; edges_written: number; duration_ms: number;
+    };
+    const status = await client.request("status") as { pid: number };
+    return { status: "indexed", projectRoot, filesParsed: result.files_parsed,
+      nodesWritten: result.nodes_written, edgesWritten: result.edges_written,
+      durationMs: result.duration_ms, watcherPid: status.pid };
   } catch (err) {
     logger.warn({ err, projectRoot }, "session-start-hook: index failed, skipping");
     return { status: "skipped", reason: `index-failed: ${(err as Error).message}` };
-  } finally {
-    store.close();
-  }
-
-  const watcherPid = ensureWatchDaemon(projectRoot);
-
-  return {
-    status: "indexed",
-    projectRoot,
-    filesParsed: indexResult.filesParsed,
-    nodesWritten: indexResult.nodesWritten,
-    edgesWritten: indexResult.edgesWritten,
-    durationMs: indexResult.durationMs,
-    watcherPid,
-  };
+  } finally { await client.close(); }
 }
 
 /**
@@ -131,7 +112,7 @@ function emitHookOutput(result: HookResult): void {
     return;
   }
 
-  const watchNote = result.watcherPid !== null ? `, watcher pid ${result.watcherPid}` : "";
+  const watchNote = result.watcherPid !== null ? `, shared service pid ${result.watcherPid}` : "";
   const message =
     `Spindle: graph indexed at ${result.projectRoot} ` +
     `(${result.filesParsed} files, ${result.durationMs}ms${watchNote}). ` +
@@ -212,33 +193,6 @@ async function readStdinJson(): Promise<StdinPayload | null> {
       finish(null);
     });
   });
-}
-
-function ensureWatchDaemon(projectRoot: string): number | null {
-  const pidFile = getPidFilePath(projectRoot);
-  const existing = readPidFile(pidFile);
-  if (existing && isPidAlive(existing.pid)) {
-    return existing.pid;
-  }
-
-  const self = execPath;
-  if (!self) {
-    logger.warn("session-start-hook: cannot resolve own binary path to spawn watcher");
-    return null;
-  }
-
-  try {
-    const child = spawn(self, ["watch-daemon", projectRoot], {
-      detached: true,
-      stdio: "ignore",
-      env: process.env,
-    });
-    child.unref();
-    return child.pid ?? null;
-  } catch (err) {
-    logger.warn({ err, projectRoot }, "session-start-hook: failed to spawn watch daemon");
-    return null;
-  }
 }
 
 type Detection = { isSfdx: true; projectRoot: string } | { isSfdx: false };

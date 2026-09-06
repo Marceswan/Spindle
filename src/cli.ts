@@ -3,18 +3,13 @@
 // reset, doctor. See section 15.11 of the design doc.
 
 import { Command } from "commander";
-import { dirname, resolve } from "node:path";
-import { mkdir } from "node:fs/promises";
-import { watch } from "chokidar";
+import { resolve } from "node:path";
 
 import { startServer } from "./server.ts";
 import { logger } from "./util/logger.ts";
-import { GraphStore } from "./graph/store.ts";
-import { indexProject } from "./pipeline/index-project.ts";
 import { getDefaultDbPath } from "./util/db-path.ts";
 import { runSessionStartHook } from "./hook/session-start.ts";
-import { runWatchDaemon } from "./hook/watch-daemon.ts";
-import { stopWatcher } from "./hook/watch-control.ts";
+import { connectService } from "./service/client.ts";
 import { registerHook, unregisterHook } from "./hook/register.ts";
 
 const VERSION = "1.1.2";
@@ -27,6 +22,15 @@ program
   .version(VERSION);
 
 program
+  .command("service")
+  .description("Internal: shared local graph service; exits after its last client disconnects")
+  .option("--db-path <path>", "Graph database to serve")
+  .action(async (opts: { dbPath?: string }) => {
+    const { runService } = await import("./service/host.ts");
+    await runService(opts.dbPath);
+  });
+
+program
   .command("index <project-path>")
   .description("Build or refresh the graph for an SFDX project")
   .option("--full", "Force a full reindex, ignoring stored file hashes", false)
@@ -35,83 +39,23 @@ program
   .action(async (projectPath: string, opts: { full: boolean; watch: boolean; dbPath?: string }) => {
     const projectRoot = resolve(projectPath);
     const dbPath = opts.dbPath ?? getDefaultDbPath();
-    await mkdir(dirname(dbPath), { recursive: true });
-    const store = new GraphStore(dbPath);
-
-    const runIndex = async (mode: "full" | "incremental"): Promise<void> => {
-      const result = await indexProject(projectRoot, store, { mode });
-      logger.info(
-        {
-          mode,
-          filesParsed: result.filesParsed,
-          nodesWritten: result.nodesWritten,
-          edgesWritten: result.edgesWritten,
-          durationMs: result.durationMs,
-          warnings: result.warnings.length,
-        },
-        "index complete",
-      );
-    };
-
+    const client = await connectService(dbPath);
+    let keepOpen = false;
     try {
-      await runIndex(opts.full ? "full" : "incremental");
-    } catch (err) {
-      logger.error({ err }, "index failed");
-      store.close();
-      process.exit(1);
-    }
-
-    if (!opts.watch) {
-      store.close();
-      return;
-    }
-
-    // Watch mode: chokidar fires on file changes; debounce reindexes by 300ms so a burst of
-    // saves (e.g. an IDE batch write) becomes a single incremental run.
-    logger.info({ projectRoot }, "watch mode: watching for changes");
-    const watcher = watch(projectRoot, {
-      ignored: [
-        /(^|[/\\])\../,                              // dotfiles + dot-dirs (.git, .sfdx-graph, .sfdx, .sf)
-        "**/node_modules/**",
-        "**/dist/**",
-      ],
-      ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
-    });
-
-    let pending: ReturnType<typeof setTimeout> | null = null;
-    let running = false;
-    const scheduleReindex = (): void => {
-      if (pending !== null) clearTimeout(pending);
-      pending = setTimeout(() => {
-        pending = null;
-        if (running) {
-          // Reschedule if a run is already in flight.
-          scheduleReindex();
-          return;
-        }
-        running = true;
-        runIndex("incremental")
-          .catch((err: unknown) => logger.error({ err }, "watch: reindex failed"))
-          .finally(() => {
-            running = false;
-          });
-      }, 300);
-    };
-
-    watcher.on("all", (event, path) => {
-      logger.debug({ event, path }, "watch: change");
-      scheduleReindex();
-    });
-
-    const shutdown = async (): Promise<void> => {
-      logger.info("watch mode: shutting down");
-      await watcher.close();
-      store.close();
-      process.exit(0);
-    };
-    process.on("SIGINT", () => { void shutdown(); });
-    process.on("SIGTERM", () => { void shutdown(); });
+      const result = await client.request("call", { name: "index_project", arguments: {
+        project_root: projectRoot, mode: opts.full ? "full" : "incremental",
+      } });
+      logger.info({ result }, "index complete");
+      if (opts.watch) {
+        keepOpen = true;
+        const shutdown = (): void => {
+          process.off("SIGINT", shutdown); process.off("SIGTERM", shutdown); process.off("SIGHUP", shutdown);
+          void client.close();
+        };
+        process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown); process.on("SIGHUP", shutdown);
+        logger.info({ projectRoot }, "shared watch active; Ctrl+C disconnects this client");
+      }
+    } finally { if (!keepOpen) await client.close(); }
   });
 
 program
@@ -134,29 +78,25 @@ program
 
 program
   .command("watch-daemon <project-root>")
-  .description("Internal: long-lived per-project watcher started by session-start-hook")
+  .description("Legacy alias: index through the shared service")
   .action(async (projectRoot: string) => {
-    await runWatchDaemon(projectRoot);
+    const client = await connectService();
+    try { await client.request("call", { name: "index_project", arguments: { project_root: resolve(projectRoot) } }); }
+    finally { await client.close(); }
   });
 
 program
   .command("stop-watch")
-  .description("Stop the watcher daemon associated with the current (or given) project")
+  .description("Legacy hook compatibility; shared watchers follow client lifetime")
   .option("--cwd <path>", "Project root to stop watching (defaults to $CLAUDE_PROJECT_DIR or process.cwd())")
-  .action((opts: { cwd?: string }) => {
-    const root = resolve(opts.cwd ?? process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd());
-    const result = stopWatcher(root);
-    process.stdout.write(
-      result.stopped
-        ? `Spindle: stopped watcher for ${root}\n`
-        : `Spindle: no live watcher for ${root}\n`,
-    );
-    process.exit(0);
+  .action((_opts: { cwd?: string }) => {
+    // Legacy SessionEnd hooks must not terminate a watcher still used by other clients.
+    process.stdout.write("Spindle: watchers are shared; they close after the last client disconnects.\n");
   });
 
 program
   .command("register-hook")
-  .description("Register Spindle's SessionStart + SessionEnd hooks in ~/.claude/settings.json")
+  .description("Register SessionStart and remove obsolete SessionEnd hooks")
   .option("--settings <path>", "Override the settings.json path (defaults to $CLAUDE_CONFIG_DIR/settings.json or ~/.claude/settings.json)")
   .option("--binary <path>", "Override the binary path written to settings.json (defaults to this process's argv[0])")
   .action((opts: { settings?: string; binary?: string }) => {

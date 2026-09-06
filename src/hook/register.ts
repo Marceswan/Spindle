@@ -67,10 +67,6 @@ function buildSessionStartCommand(binary: string): string {
   return `${quoteIfNeeded(binary)} session-start-hook`;
 }
 
-function buildSessionEndCommand(binary: string): string {
-  return `${quoteIfNeeded(binary)} stop-watch`;
-}
-
 function quoteIfNeeded(p: string): string {
   if (p.includes(" ") || p.includes("\t")) return `"${p}"`;
   return p;
@@ -117,7 +113,6 @@ export function registerHook(opts: RegisterOptions = {}): RegisterResult {
   const path = opts.settingsPath ?? getDefaultSettingsPath();
   const binary = opts.binary ?? resolveSelfBinary();
   const startCommand = buildSessionStartCommand(binary);
-  const endCommand = buildSessionEndCommand(binary);
 
   const original = readSettings(path);
   const before = serialize(original);
@@ -125,15 +120,15 @@ export function registerHook(opts: RegisterOptions = {}): RegisterResult {
 
   if (!settings.hooks) settings.hooks = {};
 
-  // SessionStart — runs the index + spawns the watch daemon. Use no matcher so the hook
+  // SessionStart — indexes through the shared service. Use no matcher so the hook
   // fires on every SessionStart subtype: startup, resume, clear, compact. Skipping any of
   // these can leave the graph stale across resumed sessions; the hook is idempotent so
   // re-firing is cheap.
   upsertHook(settings, "SessionStart", null, startCommand, isSessionStartHook);
 
-  // SessionEnd — terminates the watch daemon. SessionEnd does not use matchers in
-  // Claude Code; emit a single entry with no matcher.
-  upsertHook(settings, "SessionEnd", null, endCommand, isSessionEndHook);
+  // Existing SessionEnd hooks must not stop work belonging to another client.
+  // The shared service observes connection lifetimes directly.
+  stripEvent(settings, "SessionEnd", isSessionEndHook);
 
   const after = serialize(settings);
   if (after === before) return { changed: false, path };

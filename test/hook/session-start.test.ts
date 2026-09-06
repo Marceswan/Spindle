@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach, setDefaultTimeout } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 setDefaultTimeout(30_000);
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runSessionStartHook } from "../../src/hook/session-start.ts";
-import { stopWatcher } from "../../src/hook/watch-control.ts";
+
 
 const tempDirs: string[] = [];
 
@@ -17,11 +17,18 @@ function makeTempDir(): string {
   return dir;
 }
 
-afterEach(() => {
+let previousHome: string | undefined;
+beforeEach(() => {
+  previousHome = process.env["SFDX_GRAPH_HOME"];
+  process.env["SFDX_GRAPH_HOME"] = makeTempDir();
+});
+
+afterEach(async () => {
+  await Bun.sleep(1500); // shared service idle shutdown completes before removing its database
+  if (previousHome === undefined) delete process.env["SFDX_GRAPH_HOME"];
+  else process.env["SFDX_GRAPH_HOME"] = previousHome;
   while (tempDirs.length) {
     const dir = tempDirs.pop()!;
-    // Stop any watcher we may have spawned for this project so it doesn't outlive the test.
-    try { stopWatcher(dir); } catch { /* ignore */ }
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });

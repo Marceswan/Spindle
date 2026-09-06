@@ -273,6 +273,7 @@ export type SearchParams = {
   } | undefined;
   excludeEntryPoints?: boolean | undefined;
   limit?: number | undefined;
+  offset?: number | undefined;
 };
 
 export function searchNodes(store: GraphStore, params: SearchParams): StoredNode[] {
@@ -298,90 +299,59 @@ export function searchNodes(store: GraphStore, params: SearchParams): StoredNode
   }
 
   const limitN = params.limit ?? 50;
-  // Fetch a larger set for JS-side filtering, capped sensibly.
-  const fetchLimit = Math.max(limitN * 20, 1000);
+  // Apply pagination after every filter; a pre-filter cap silently loses late matches.
   const sql = `
     SELECT id, project_id, label, name, qualified_name,
            file_path, start_line, end_line, properties, content_hash
     FROM nodes
     WHERE ${whereClauses.join(" AND ")}
     ORDER BY id
-    LIMIT ${fetchLimit}
   `;
 
-  const rows = store.db.query<RawNodeRow, (string | number)[]>(sql).all(...bindValues);
-  let nodes = rows.map(toStoredNode);
-
-  // JS-side filtering.
-  if (params.namePattern !== undefined) {
-    const re = new RegExp(params.namePattern, "i");
-    nodes = nodes.filter((n) => re.test(n.name));
-  }
-  if (params.qualifiedNamePattern !== undefined) {
-    const re = new RegExp(params.qualifiedNamePattern, "i");
-    nodes = nodes.filter((n) => re.test(n.qualifiedName));
-  }
-  if (params.filePattern !== undefined) {
-    const pat = params.filePattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-    const re = new RegExp(pat, "i");
-    nodes = nodes.filter((n) => n.filePath !== null && re.test(n.filePath));
-  }
-  if (params.propertyFilters !== undefined) {
-    const pf = params.propertyFilters;
-    nodes = nodes.filter((n) => {
-      for (const [k, v] of Object.entries(pf)) {
-        if (JSON.stringify(n.properties[k]) !== JSON.stringify(v)) return false;
+  const nameRe = params.namePattern === undefined ? null : new RegExp(params.namePattern, "i");
+  const qnameRe = params.qualifiedNamePattern === undefined ? null : new RegExp(params.qualifiedNamePattern, "i");
+  const fileRe = params.filePattern === undefined ? null : new RegExp(
+    params.filePattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*"), "i",
+  );
+  const degreeQuery = store.db.query<{ n: number }, [number, string, number, string]>(
+    "SELECT (SELECT count(*) FROM edges WHERE source_id = ? AND edge_type = ?) + " +
+    "(SELECT count(*) FROM edges WHERE target_id = ? AND edge_type = ?) AS n",
+  );
+  const nodes: StoredNode[] = [];
+  const offset = params.offset ?? 0;
+  let matched = 0;
+  // Stream candidates until the requested matching page is filled. No pre-filter cap,
+  // and no full-project array of parser properties retained in memory.
+  const statement = store.db.prepare<RawNodeRow, (string | number)[]>(sql);
+  try {
+    for (const row of statement.iterate(...bindValues)) {
+      if (nameRe && !nameRe.test(row.name)) continue;
+      if (qnameRe && !qnameRe.test(row.qualified_name)) continue;
+      if (fileRe && (row.file_path === null || !fileRe.test(row.file_path))) continue;
+      const node = toStoredNode(row);
+      if (params.propertyFilters && Object.entries(params.propertyFilters).some(
+        ([key, value]) => JSON.stringify(node.properties[key]) !== JSON.stringify(value),
+      )) continue;
+      if (params.excludeEntryPoints) {
+        const annotations = node.properties["annotations"];
+        if (Array.isArray(annotations) && annotations.some(a => typeof a === "string" &&
+          ["auraenabled", "invocablemethod", "istest", "httpget", "httppost", "httpput", "httppatch", "httpdelete"].includes(a.toLowerCase()),
+        )) continue;
       }
-      return true;
-    });
-  }
-
-  // Entry point filter: exclude @AuraEnabled, @InvocableMethod, @IsTest, @Http*, trigger handlers.
-  if (params.excludeEntryPoints === true) {
-    nodes = nodes.filter((n) => {
-      const annotations = n.properties["annotations"];
-      if (!Array.isArray(annotations)) return true;
-      const lower = annotations.map((a) => (typeof a === "string" ? a.toLowerCase() : ""));
-      return !lower.some((a) =>
-        ["auraenabled", "invocablemethod", "istest", "httpget", "httppost", "httpput", "httppatch", "httpdelete"].includes(a),
-      );
-    });
-  }
-
-  // Relationship filter.
-  if (params.relationship !== undefined) {
-    const rel = params.relationship;
-    const filtered: StoredNode[] = [];
-    for (const node of nodes) {
-      let degree = 0;
-      if (rel.direction === "outbound" || rel.direction === "both") {
-        type DegRow = { n: number };
-        const r = store.db
-          .query<DegRow, [number, string]>(
-            "SELECT COUNT(*) AS n FROM edges WHERE source_id = ? AND edge_type = ?",
-          )
-          .get(node.id, rel.edgeType);
-        degree += r?.n ?? 0;
+      if (params.relationship) {
+        const rel = params.relationship;
+        const degree = degreeQuery.get(
+          rel.direction === "inbound" ? -1 : node.id, rel.edgeType,
+          rel.direction === "outbound" ? -1 : node.id, rel.edgeType,
+        )?.n ?? 0;
+        if (degree < (rel.minDegree ?? 1) || (rel.maxDegree !== undefined && degree > rel.maxDegree)) continue;
       }
-      if (rel.direction === "inbound" || rel.direction === "both") {
-        type DegRow = { n: number };
-        const r = store.db
-          .query<DegRow, [number, string]>(
-            "SELECT COUNT(*) AS n FROM edges WHERE target_id = ? AND edge_type = ?",
-          )
-          .get(node.id, rel.edgeType);
-        degree += r?.n ?? 0;
-      }
-      const min = rel.minDegree ?? 1;
-      const max = rel.maxDegree;
-      if (degree >= min && (max === undefined || degree <= max)) {
-        filtered.push(node);
-      }
+      if (matched++ < offset) continue;
+      nodes.push(node);
+      if (nodes.length >= limitN) break;
     }
-    nodes = filtered;
-  }
-
-  return nodes.slice(0, limitN);
+  } finally { statement.finalize(); }
+  return nodes;
 }
 
 // ---------------------------------------------------------------------------

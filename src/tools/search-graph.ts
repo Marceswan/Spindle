@@ -10,7 +10,8 @@ export const name = "search_graph";
 export const description =
   "Search the metadata graph by label, name pattern, qualified name pattern, file path, " +
   "or property values. Prefer this over grep for structural questions like 'find all " +
-  "@AuraEnabled methods' or 'find classes that extend BatchableContext'.";
+  "@AuraEnabled methods' or 'find classes that implement Database.Batchable'. " +
+  "Compact evidence by default; use detail=full for properties. Continue with next_offset while has_more.";
 
 export const inputSchema = {
   type: "object",
@@ -48,7 +49,9 @@ export const inputSchema = {
       type: "boolean",
       description: "Exclude @AuraEnabled, @InvocableMethod, @IsTest, triggers, and @Http* methods.",
     },
-    limit: { type: "number", description: "Max results. Default 50." },
+    limit: { type: "integer", minimum: 1, maximum: 500, description: "Page size. Default 50, max 500." },
+    offset: { type: "integer", minimum: 0, description: "Skip matching results. Use next_offset from the previous page." },
+    detail: { type: "string", enum: ["compact", "full"], description: "Default compact: names, labels, source locations. Full adds parser properties and storage fields." },
   },
   required: ["project_id"],
 } as const;
@@ -70,10 +73,17 @@ type Input = {
   relationship?: RelationshipInput | undefined;
   exclude_entry_points?: boolean | undefined;
   limit?: number | undefined;
+  offset?: number | undefined;
+  detail?: "compact" | "full" | undefined;
 };
 
 export async function handler(input: unknown, store: GraphStore): Promise<unknown> {
   const i = input as Input;
+  const limit = i.limit ?? 50;
+  const offset = i.offset ?? 0;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error("limit must be an integer from 1 to 500");
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset must be a nonnegative integer");
+  if (i.detail !== undefined && i.detail !== "compact" && i.detail !== "full") throw new Error("detail must be compact or full");
 
   const relationship = i.relationship !== undefined
     ? {
@@ -93,8 +103,18 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     ...(i.property_filters !== undefined ? { propertyFilters: i.property_filters } : {}),
     ...(relationship !== undefined ? { relationship } : {}),
     ...(i.exclude_entry_points !== undefined ? { excludeEntryPoints: i.exclude_entry_points } : {}),
-    ...(i.limit !== undefined ? { limit: i.limit } : {}),
+    limit: limit + 1,
+    offset,
   });
 
-  return { nodes, count: nodes.length };
+  const hasMore = nodes.length > limit;
+  const page = nodes.slice(0, limit);
+  return {
+    nodes: i.detail === "full" ? page : page.map(({ label, name, qualifiedName, filePath, startLine, endLine }) => ({
+      label, name, qualifiedName, filePath, startLine, endLine,
+    })),
+    count: page.length,
+    has_more: hasMore,
+    next_offset: hasMore ? offset + page.length : null,
+  };
 }
