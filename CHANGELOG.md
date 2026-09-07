@@ -8,6 +8,19 @@ follow SemVer once a v1.0 binary ships.
 
 ---
 
+## [v1.2.0] — 2026-09-07 (release setup pending)
+
+- Extract advanced Flow variable, decision, assignment, formula, and record references.
+- Parse static SOQL with the Apex grammar, retaining clause context and resolving
+  metadata-backed parent and child relationships.
+- Support OPTIONAL MATCH and WITH chaining with scoped, parameterized Cypher stages.
+- Add paginated `diff_projects` and CLI comparison of indexed org source snapshots.
+- Add a read-only local browser UI using the existing shared service.
+- Add verified self-update and rollback for macOS/Linux, with GPG-signed version-bound
+  checksum manifests. Windows replacement is manual. Release signing requires the
+  documented public-key and Actions-secret setup; no production key is included.
+- Full reindex required to refresh references in previously indexed projects.
+
 ## [v1.1.2] — patch
 
 ### Fixed

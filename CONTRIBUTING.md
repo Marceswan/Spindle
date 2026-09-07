@@ -5,7 +5,7 @@ Spindle is a local-first MCP server that indexes SFDX projects into a queryable 
 ## Development setup
 
 ```bash
-git clone https://github.com/Kelley-Austin/Spindle.git
+git clone https://github.com/Marceswan/Spindle.git
 cd Spindle
 bun install
 bun test                  # 85+ tests should pass

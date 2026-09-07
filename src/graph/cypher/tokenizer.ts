@@ -1,8 +1,11 @@
-// Tokenizer for the Cypher subset supported in v0.5.
+// Tokenizer for the read-only Cypher subset.
 // Produces a flat token stream consumed by the recursive-descent parser.
 
 export const enum TokenKind {
   // Keywords
+  KwWith = "WITH",
+  KwAs = "AS",
+  KwDistinct = "DISTINCT",
   KwMatch = "MATCH",
   KwWhere = "WHERE",
   KwReturn = "RETURN",
@@ -89,7 +92,9 @@ const RESERVED: Record<string, TokenKind> = {
   COUNT: TokenKind.KwCount,
   OPTIONAL: TokenKind.KwOptionalMatch, // will merge with MATCH
   BY: TokenKind.KwOrderBy,   // placeholder; always consumed by ORDER
-  WITH: TokenKind.KwContains, // placeholder; consumed by STARTS/ENDS
+  WITH: TokenKind.KwWith,
+  AS: TokenKind.KwAs,
+  DISTINCT: TokenKind.KwDistinct,
 } as const;
 
 export function tokenize(input: string): Token[] {
@@ -136,6 +141,7 @@ export function tokenize(input: string): Token[] {
           value += advance();
         }
       }
+      if (peek() !== quote) throw new Error(`Unterminated string literal at column ${startCol}`);
       advance(); // closing quote
       tokens.push({ kind: TokenKind.StringLit, text: value, column: startCol });
       continue;
@@ -199,8 +205,7 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Unknown character: skip with no error (best-effort)
-    advance();
+    throw new Error(`Unexpected character at column ${startCol}: ${ch}`);
   }
 
   // Post-process: collapse multi-word keywords in sequence.
@@ -246,13 +251,9 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Standalone WITH is not a real keyword; treat as identifier if it appears alone
-    if (t.text.toUpperCase() === "WITH") {
-      merged.push({ kind: TokenKind.Ident, text: t.text, column: t.column });
-      i++;
-      continue;
+    if ([TokenKind.KwOptionalMatch, TokenKind.KwStartsWith, TokenKind.KwEndsWith, TokenKind.KwOrderBy].includes(t.kind)) {
+      throw new Error(`Incomplete clause keyword '${t.text}' at column ${t.column}`);
     }
-
     merged.push(t);
     i++;
   }

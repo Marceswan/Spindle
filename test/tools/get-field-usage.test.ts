@@ -17,7 +17,7 @@ const FIXTURE_DIR = join(import.meta.dir, "..", "fixtures", "sample-sfdx-project
 type FieldUsageReport = {
   field: string;
   parent_sobject: string | null;
-  apex_methods: { qualified_name: string }[];
+  apex_methods: { qualified_name: string; context: string }[];
   lwc_bundles: { qualified_name: string }[];
   vf_pages: { qualified_name: string }[];
   vf_components: { qualified_name: string }[];
@@ -113,6 +113,11 @@ describe("get_field_usage tool", () => {
     ) as FieldUsageReport;
 
     expect(result.apex_methods).toEqual([]);
+  });
+
+  test("preserves WHERE-only SOQL field context", async () => {
+    const result = await handler({ project_id: projectId, field: "Customer__c.Tier__c", include_indirect: false }, store) as FieldUsageReport;
+    expect(result.apex_methods.some((usage) => usage.context === "SOQL_WHERE")).toBe(true);
   });
 
   test("malformed field input returns an error", async () => {

@@ -34,7 +34,7 @@ import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 
-import { extractSoqlFromObject, extractSoqlSelectFields, extractSoslReturningObjects } from "./soql-extract.ts";
+import { parseSoql, originalText, extractSoslReturningObjects } from "./soql-extract.ts";
 import type { ParseResult } from "./types.ts";
 
 export function parseApex(filePath: string, source: string): ParseResult {
@@ -611,6 +611,12 @@ function walkExpressionsAndStatements(
           sourceFile: filePath,
           sourceLine: node.start.line,
         });
+        if (receiverText?.toLowerCase() === "database" && ["query", "querywithbinds", "countquery", "getquerylocator", "getquerylocatorwithbinds"].includes(calleeName.toLowerCase())) {
+          const firstArgument = node.expressionList()?.expression()[0];
+          if (firstArgument && !originalText(firstArgument).trimStart().startsWith("[")) {
+            result.warnings.push({message: "Dynamic SOQL cannot be resolved statically; query references omitted", line: node.start.line});
+          }
+        }
       }
     } else if (node instanceof CreatorContext) {
       const created = node.createdName();
@@ -625,44 +631,35 @@ function walkExpressionsAndStatements(
         });
       }
     } else if (node instanceof SoqlLiteralContext) {
-      const info = extractSoqlFromObject(node.text);
-      if (info !== null) {
-        ensureSObjectPlaceholder(result, info.fromObject, filePath, node.start.line);
-        result.unresolved.push({
-          kind: "soql",
-          fromMethodQName: enclosingQName,
-          fromObject: info.fromObject,
-          rawText: node.text,
-          sourceFile: filePath,
-          sourceLine: node.start.line,
-        });
-        result.edges.push({
-          edgeType: EdgeType.SoqlQueries,
-          fromQName: enclosingQName,
-          fromLabel: NodeLabel.ApexMethod,
-          toQName: info.fromObject,
-          toLabel: NodeLabel.SObject,
-          confidence: Confidence.Regex,
-          sourceLine: node.start.line,
-          properties: { raw: truncate(node.text, 200) },
-        });
-
-        // v0.2 task #15: emit one REFERENCES_FIELD edge per simple identifier in the SELECT
-        // clause. Pass 2 drops edges whose Field node isn't in the graph (standard objects,
-        // unmodelled custom fields) — leaving the coarse SOQL_QUERIES edge as the fallback.
-        const selectFields = extractSoqlSelectFields(node.text);
-        for (const fieldName of selectFields) {
-          const fieldQName = `${info.fromObject}.${fieldName}`;
+      const raw = originalText(node);
+      const info = parseSoql(raw);
+      if (info === null) {
+        result.warnings.push({message: "SOQL grammar could not parse query; references omitted", line: node.start.line});
+      } else {
+        for (const message of info.warnings) result.warnings.push({message, line: node.start.line});
+        const sourceLabel = result.nodes.find(n => n.qualifiedName === enclosingQName)?.label ?? NodeLabel.ApexMethod;
+        const scopePath = (index: number): string[] => {
+          const scope = info.queries[index]!;
+          return scope.relationship && scope.parent !== null ? [...scopePath(scope.parent), scope.fromObject] : [scope.fromObject];
+        };
+        for (const [index, scope] of info.queries.entries()) {
+          const objectPath = scopePath(index);
+          if (!scope.relationship) ensureSObjectPlaceholder(result, scope.fromObject, filePath, node.start.line);
           result.edges.push({
-            edgeType: EdgeType.ReferencesField,
-            fromQName: enclosingQName,
-            fromLabel: NodeLabel.ApexMethod,
-            toQName: fieldQName,
-            toLabel: NodeLabel.Field,
-            confidence: Confidence.Regex,
+            edgeType: EdgeType.SoqlQueries, fromQName: enclosingQName, fromLabel: sourceLabel,
+            toQName: objectPath.join("."), toLabel: NodeLabel.SObject, confidence: Confidence.Resolved,
             sourceLine: node.start.line,
-            properties: { context: "SOQL_SELECT", parentSObject: info.fromObject },
+            properties: {raw: truncate(raw,200), soqlObjectPath: objectPath},
           });
+          for (const field of scope.fields) {
+            const fieldObjectPath = field.object ? [field.object] : objectPath;
+            result.edges.push({
+              edgeType: EdgeType.ReferencesField, fromQName: enclosingQName, fromLabel: sourceLabel,
+              toQName: `${fieldObjectPath.join(".")}.${field.path}`, toLabel: NodeLabel.Field,
+              confidence: Confidence.Resolved, sourceLine: node.start.line,
+              properties: {context: field.context, parentSObject: fieldObjectPath[0], soqlObjectPath: fieldObjectPath, soqlFieldPath: field.path},
+            });
+          }
         }
       }
     } else if (node instanceof SoslLiteralContext) {

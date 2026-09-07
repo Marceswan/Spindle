@@ -48,13 +48,13 @@ See [implementation, upstream comparison, measurements and limitations](docs/opt
 POSIX (macOS / Linux):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kelley-Austin/Spindle/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Marceswan/Spindle/main/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/Kelley-Austin/Spindle/main/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/Marceswan/Spindle/main/install.ps1 | iex
 ```
 
 The installer detects your platform, downloads the matching binary from the latest GitHub Release, verifies its SHA256 against the release's `SHA256SUMS` file, and installs to `/usr/local/bin` (or `~/.local/bin` if the former isn't writable) on POSIX, or `$LOCALAPPDATA\Programs\spindle` on Windows.
@@ -67,7 +67,7 @@ Env vars to control behavior:
 ### Run from source
 
 ```bash
-git clone https://github.com/Kelley-Austin/Spindle.git
+git clone https://github.com/Marceswan/Spindle.git
 cd Spindle
 bun install
 bun test                  # 85 tests
@@ -149,6 +149,7 @@ Nine tools live; each handler is a TypeScript file under `src/tools/`.
 | `search_graph` | Filtered structural search by label, name regex, qualified name regex, file glob, properties, relationships, degree |
 | `trace_references` | BFS up to a configurable depth from a start node, in/out/both, filtered by edge type and confidence |
 | `get_source_snippet` | Return source code for a graph node with optional context lines — replaces a separate file Read |
+| `diff_projects` | Paginated semantic comparison of two indexed org source snapshots |
 | `get_field_usage` | Every reference to a field across LWC, VF, validation rules, FlexiPages, layouts, Apex SOQL/DML, and Flows — grouped by usage type with a three-tier `coverage` summary (authoritative / indirect / pending) |
 | `get_permission_access` | Every PermissionSet and Profile that grants access to a given ApexClass / SObject / Field / VisualforcePage / RecordType. Walks PermissionSetGroup membership to surface indirect grants |
 | `query_graph` | Arbitrary openCypher-subset queries (MATCH, WHERE, RETURN, ORDER BY, LIMIT, SKIP, count). For the long-tail questions the typed tools don't cover |
@@ -214,13 +215,13 @@ graph TB
         Dist1[Cross-platform binaries<br/>+ install.sh / install.ps1<br/>+ GitHub Actions matrix release]
     end
 
-    subgraph Soon[" 🚧 v0.6 + v1.1 polish "]
+    subgraph Soon[" ✅ v1.2 extraction and queries "]
         FlowAdv4[Flow assignments / decisions / formulas<br/>variable-to-SObject binding]
-        OptCypher[OPTIONAL MATCH + WITH chaining<br/>+ aggregates beyond count]
+        OptCypher[OPTIONAL MATCH + WITH chaining<br/>+ count grouping]
         SOQL4[Full SOQL parser<br/>replaces regex]
     end
 
-    subgraph Later[" 📋 v1.2+ "]
+    subgraph Later[" ✅ v1.2 tools and distribution "]
         SelfUpdate[Self-update command<br/>+ GPG-signed checksums]
         WebUI[Read-only Web UI<br/>for offline exploration]
         Diff[Multi-org diff mode]
@@ -263,6 +264,46 @@ Conventions live in `CLAUDE.md`. Gotchas live in `learnings.md` (read it before 
 
 ---
 
+## v1.2 usage and boundaries
+
+Force a full reindex of existing projects to populate the new references:
+
+```sh
+sfdx-graph-mcp index /path/to/project --full
+sfdx-graph-mcp ui
+sfdx-graph-mcp diff 1 2 --limit 25
+sfdx-graph-mcp update --check
+```
+
+The read-only browser UI prints a private loopback URL. It supports symbol search,
+source evidence, inbound references, and snapshot comparison through the shared
+service. Closing it disconnects its client; other clients keep their service session.
+
+`diff_projects` is the tenth MCP tool. Index two retrieved org source directories in
+the same database, then compare their project IDs. Results are paginated and compare
+API names, properties, source hashes, and relationships while ignoring local paths
+and database IDs. `--metadata-only` excludes source hashes. This compares indexed
+source snapshots, not live org state.
+
+Flow extraction now follows typed variables, decisions, assignments, formulas, and
+record operations. Formula references carry heuristic confidence; relationship
+traversal and screen/choice-specific references remain incomplete. SOQL extraction
+uses the Apex parser grammar, including nested queries, filters, grouping, ordering,
+TYPEOF and metadata-resolved relationships. Dynamic query strings remain unresolved;
+`FIELDS()` does not enumerate wildcard fields. These limits appear in index warnings.
+
+Cypher supports repeated `MATCH`, `OPTIONAL MATCH`, and `WITH` stages, nullable
+optional bindings, aliases, `DISTINCT`, `count` grouping, and stage pagination.
+Each MATCH supports one directed edge; chain clauses for longer paths. Predicates
+retain the existing equality/string subset, ordering accepts one key, and aggregates
+other than `count`, variable-length paths, and `UNWIND` are unsupported.
+
+Self-update verifies GPG-signed, version-bound checksums before atomic installation,
+with backup and rollback on macOS/Linux. Windows requires manual replacement.
+**Release signing needs one-time key and GitHub secret setup before publishing.**
+Development builds fail closed without an embedded trusted key. Follow
+[the release-signing guide](docs/release-signing.md) for setup and update commands.
+
 ## Roadmap
 
 v1.0 ships a single self-contained Bun-compiled binary per platform via GitHub Releases. Current phase progress:
@@ -273,8 +314,8 @@ v1.0 ships a single self-contained Bun-compiled binary per platform via GitHub R
 - ✅ **v0.4** — StaticResource + EmailTemplate + chokidar watch mode + Bun-compiled binary validated
 - ✅ **v0.5** — Cypher query layer + `query_graph` MCP tool
 - ✅ **v1.0 distribution** — Cross-platform matrix release wired up; install scripts; LICENSE/SECURITY/CONTRIBUTING (current snapshot — tag a `v*.*.*` release to publish binaries)
-- ⏭️ **v0.6 / v1.1** — Advanced Flow extraction (variables, decisions, formulas); OPTIONAL MATCH + WITH chaining in Cypher; full SOQL parser replacing the regex
-- ⏭️ **v1.2+** — Self-update + GPG-signed checksums; read-only web UI; multi-org diff mode
+- ✅ **v1.2 extraction** — Advanced Flow extraction (variables, decisions, formulas); OPTIONAL MATCH + WITH chaining in Cypher; full SOQL parser replacing the regex
+- ✅ **v1.2 tooling** — Self-update + GPG-signed checksums; read-only web UI; multi-org diff mode
 
 See `sfdx-graph-mcp-design.md` §14 for the original roadmap.
 

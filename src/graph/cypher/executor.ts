@@ -2,7 +2,7 @@
 
 import type { GraphStore, StoredNode } from "../store.ts";
 import type { SqlPlan } from "./planner.ts";
-import type { CypherQuery, ReturnItem } from "./types.ts";
+import type { CypherQuery } from "./types.ts";
 
 export type QueryResult = {
   columns: string[];
@@ -75,28 +75,6 @@ function parseEdgeBlob(blob: unknown): Record<string, unknown> {
   return {};
 }
 
-// Determine whether a RETURN item refers to a node variable, edge variable, or a scalar.
-// We need this to decide how to post-process each column.
-type ColumnKind = "node" | "edge" | "scalar";
-
-function classifyReturnItem(
-  item: ReturnItem,
-  variableAliases: Map<string, string>,
-  edgeVariables: Set<string>,
-): ColumnKind {
-  switch (item.kind) {
-    case "variable": {
-      if (edgeVariables.has(item.name)) return "edge";
-      if (variableAliases.has(item.name)) return "node";
-      return "scalar";
-    }
-    case "prop":
-      return "scalar";
-    case "count":
-      return "scalar";
-  }
-}
-
 export function executeQuery(
   store: GraphStore,
   plan: SqlPlan,
@@ -121,16 +99,7 @@ export function executeQuery(
     );
   }
 
-  // Collect which variables are edge variables.
-  const edgeVariables = new Set<string>();
-  if (query.match.kind === "relationship" && query.match.rel.variable) {
-    edgeVariables.add(query.match.rel.variable);
-  }
-
-  // Classify each RETURN column.
-  const columnKinds: ColumnKind[] = query.returnItems.map((item) =>
-    classifyReturnItem(item, plan.variableAliases, edgeVariables),
-  );
+  const columnKinds = plan.columnKinds;
 
   type RawRow = Record<string, unknown>;
   const rawRows = store.db.query<RawRow, (string | number | null)[]>(plan.sql).all(...params);
@@ -139,6 +108,7 @@ export function executeQuery(
   for (const raw of rawRows) {
     const colValues = Object.values(raw);
     const row: unknown[] = colValues.map((val, idx) => {
+      if (val === null) return null;
       const kind = columnKinds[idx] ?? "scalar";
       if (kind === "node") return parseNodeBlob(val);
       if (kind === "edge") return parseEdgeBlob(val);

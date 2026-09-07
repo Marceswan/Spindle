@@ -86,6 +86,56 @@ type EdgeRecord = {
   properties?: Record<string, unknown> | undefined;
 };
 
+// Relationship names require metadata: never infer a child object from its plural name.
+function soqlResolver(nodes: StoredNode[]): (edge: ParsedEdge) => StoredNode | undefined {
+  const byName = new Map(nodes.map(n => [`${n.label}::${n.qualifiedName}`.toLowerCase(), n]));
+  const parents = new Map<string, Set<string>>();
+  const children = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, key: string, target: string): void => {
+    const set = map.get(key.toLowerCase()) ?? new Set<string>();
+    set.add(target.toLowerCase());
+    map.set(key.toLowerCase(), set);
+  };
+  for (const node of nodes) {
+    if (node.label !== NodeLabel.Field) continue;
+    const props = node.properties ?? {};
+    const target = props["referenceTo"];
+    if (typeof target !== "string") continue;
+    const object = node.qualifiedName.slice(0, node.qualifiedName.lastIndexOf("."));
+    const parentRelation = node.name.endsWith("__c") ? `${node.name.slice(0,-3)}__r` : node.name.endsWith("Id") ? node.name.slice(0,-2) : node.name;
+    add(parents, `${object}.${parentRelation}`, target);
+    const childRelation = props["relationshipName"];
+    if (typeof childRelation === "string") {
+      const apiRelation = node.name.endsWith("__c") && !childRelation.endsWith("__r") ? `${childRelation}__r` : childRelation;
+      add(children, `${target}.${apiRelation}`, object);
+    }
+  }
+  const unique = (map: Map<string,Set<string>>, key: string): string | undefined => {
+    const matches = map.get(key.toLowerCase());
+    return matches?.size === 1 ? [...matches][0] : undefined;
+  };
+  return (edge: ParsedEdge): StoredNode | undefined => {
+    const path = edge.properties?.["soqlObjectPath"];
+    if (!Array.isArray(path) || !path.every(p => typeof p === "string") || !path[0]) return undefined;
+    let object: string = path[0];
+    for (const child of path.slice(1)) {
+      const target = unique(children, `${object}.${child.split(".").pop()}`);
+      if (!target) return undefined;
+      object = target;
+    }
+    if (edge.toLabel === NodeLabel.SObject) return byName.get(`${NodeLabel.SObject}::${object}`.toLowerCase());
+    const fieldPath = edge.properties?.["soqlFieldPath"];
+    if (typeof fieldPath !== "string") return undefined;
+    const parts = fieldPath.split(".");
+    for (const relation of parts.slice(0,-1)) {
+      const target = unique(parents, `${object}.${relation}`);
+      if (!target) return undefined;
+      object = target;
+    }
+    return byName.get(`${NodeLabel.Field}::${object}.${parts.at(-1)}`.toLowerCase());
+  };
+}
+
 export function runPass2(
   projectId: number,
   unresolved: UnresolvedRef[],
@@ -94,6 +144,7 @@ export function runPass2(
 ): Pass2Diagnostics {
   const allNodes = getAllNodesForProject(store, projectId);
   const sym = buildSymbolTable(allNodes);
+  const resolveSoql = soqlResolver(allNodes);
 
   let resolvedCount = 0;
   let unresolvedCount = 0;
@@ -106,7 +157,7 @@ export function runPass2(
     const fromKey = `${e.fromLabel}::${e.fromQName}`;
     const toKey = `${e.toLabel}::${e.toQName}`;
     const fromNode = sym.nodeByLabelAndQName.get(fromKey);
-    let toNode = sym.nodeByLabelAndQName.get(toKey);
+    let toNode = e.properties?.["soqlObjectPath"] ? resolveSoql(e) : sym.nodeByLabelAndQName.get(toKey);
 
     // Short-name fallback for ApexMethod targets (LWC@salesforce/apex imports, etc.).
     if (toNode === undefined && e.toLabel === NodeLabel.ApexMethod) {

@@ -12,7 +12,7 @@ import { runSessionStartHook } from "./hook/session-start.ts";
 import { connectService } from "./service/client.ts";
 import { registerHook, unregisterHook } from "./hook/register.ts";
 
-const VERSION = "1.1.2";
+import { VERSION } from "./version.ts";
 
 const program = new Command();
 
@@ -20,6 +20,65 @@ program
   .name("sfdx-graph-mcp")
   .description("Local-first MCP server that indexes SFDX projects into a queryable metadata graph")
   .version(VERSION);
+
+program
+  .command("update")
+  .description("Check for or install a GPG-verified public release")
+  .option("--check", "Check release metadata without changing the binary", false)
+  .option("--yes", "Install the verified release", false)
+  .option("--to <version>", "Select a stable release tag, including an explicit downgrade")
+  .action(async (opts: { check: boolean; yes: boolean; to?: string }) => {
+    const { checkUpdate, performUpdate } = await import("./update/update.ts");
+    if (opts.check || !opts.yes) {
+      const info = await checkUpdate(VERSION, opts.to);
+      process.stdout.write(JSON.stringify(info, null, 2) + "\n");
+      if (!opts.check) process.stdout.write("Run update --yes to verify and install.\n");
+      return;
+    }
+    if (import.meta.url.startsWith("file:") && !import.meta.url.includes("/$bunfs/")) throw new Error("Self-update requires the installed compiled binary; refusing to replace the Bun runtime");
+    process.stdout.write(JSON.stringify(await performUpdate({ currentVersion: VERSION, executablePath: process.execPath, ...(opts.to ? { version: opts.to } : {}) }), null, 2) + "\n");
+    process.stdout.write("Reconnect MCP clients to load the new executable.\n");
+  });
+
+program
+  .command("rollback")
+  .description("Restore the executable saved by the previous verified update")
+  .requiredOption("--yes", "Restore the backup executable")
+  .action(async () => {
+    if (import.meta.url.startsWith("file:") && !import.meta.url.includes("/$bunfs/")) throw new Error("Rollback requires the installed compiled binary");
+    const { rollbackUpdate } = await import("./update/update.ts");
+    process.stdout.write(JSON.stringify(await rollbackUpdate(process.execPath)) + "\n");
+  });
+
+program
+  .command("ui")
+  .description("Open a read-only local metadata explorer (prints a private local URL)")
+  .option("--port <port>", "Loopback port, default automatic", "0")
+  .option("--db-path <path>", "Graph database to explore")
+  .action(async (opts: { port: string; dbPath?: string }) => {
+    const port = Number(opts.port);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("port must be 0–65535");
+    const { startWebUi } = await import("./web/server.ts");
+    const ui = await startWebUi({ port, ...(opts.dbPath ? { dbPath: opts.dbPath } : {}) });
+    process.stdout.write(`Spindle explorer: ${ui.url}\n`);
+    const stop = (): void => { process.off("SIGINT", stop); process.off("SIGTERM", stop); process.off("SIGHUP", stop); void ui.close(); };
+    process.on("SIGINT", stop); process.on("SIGTERM", stop); process.on("SIGHUP", stop);
+  });
+
+program
+  .command("diff <base-project-id> <target-project-id>")
+  .description("Compare two indexed org/source snapshots by project ID")
+  .option("--db-path <path>", "Graph database")
+  .option("--metadata-only", "Ignore source content hashes", false)
+  .option("--offset <offset>", "Page offset", "0")
+  .option("--limit <limit>", "Page size", "50")
+  .action(async (base: string, target: string, opts: { dbPath?: string; metadataOnly: boolean; offset: string; limit: string }) => {
+    const client = await connectService(opts.dbPath);
+    try { process.stdout.write(JSON.stringify(await client.request("call", { name: "diff_projects", arguments: {
+      base_project_id: Number(base), target_project_id: Number(target), include_source: !opts.metadataOnly,
+      offset: Number(opts.offset), limit: Number(opts.limit),
+    } }), null, 2) + "\n"); } finally { await client.close(); }
+  });
 
 program
   .command("service")

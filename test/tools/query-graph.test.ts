@@ -266,20 +266,20 @@ describe("query_graph tool", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 10: Unsupported syntax — OPTIONAL MATCH returns friendly error
+  // Test 10: OPTIONAL MATCH joins independent node patterns
   // -------------------------------------------------------------------------
-  test("OPTIONAL MATCH returns error with suggestion", async () => {
+  test("OPTIONAL MATCH joins independent node patterns", async () => {
     const result = await handler(
       {
         project_id: projectId,
         query: "MATCH (n:ApexClass) OPTIONAL MATCH (m:LwcBundle) RETURN n, m",
       },
       store,
-    ) as ErrorResult;
+    ) as SuccessResult;
 
-    expect(result.error).toBeDefined();
-    expect(result.error).toContain("OPTIONAL MATCH");
-    expect(result.suggestion).toBeDefined();
+    expect(result.row_count).toBeGreaterThan(0);
+    expect(result.columns).toEqual(["n", "m"]);
+    expect((result.rows[0]![1] as StoredNode).label).toBe("LwcBundle");
   });
 
   // -------------------------------------------------------------------------

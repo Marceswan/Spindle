@@ -167,7 +167,7 @@ describe("indexProject – full mode", () => {
     expect(countEdges(store, orchestratorRun!.id, accountSvc!.id, EdgeType.Instantiates)).toBe(1);
   });
 
-  test("emits SOQL_QUERIES edge with confidence 0.6 from AccountService.purge() -> Account", () => {
+  test("emits grammar-derived SOQL_QUERIES edge with confidence 1 from AccountService.purge() -> Account", () => {
     const purgeMethod = findNodeByName(store, projectId, NodeLabel.ApexMethod, "purge");
     const accountSObj = findNode(store, projectId, NodeLabel.SObject, "Account");
     expect(purgeMethod).not.toBeNull();
@@ -180,7 +180,7 @@ describe("indexProject – full mode", () => {
       )
       .get(purgeMethod!.id, accountSObj!.id, EdgeType.SoqlQueries);
     expect(edge).not.toBeNull();
-    expect(edge?.confidence).toBe(0.6);
+    expect(edge?.confidence).toBe(1);
   });
 
   test("emits TRIGGERS_ON edge AccountTrigger -> Account", () => {

@@ -2,16 +2,16 @@
 # Downloads the latest release binary for x64 Windows, verifies its SHA256, and installs it.
 #
 # Quick install:
-#   iwr -useb https://raw.githubusercontent.com/Kelley-Austin/Spindle/main/install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/Marceswan/Spindle/main/install.ps1 | iex
 #
 # Options (set as env vars before invoking):
 #   $env:SPINDLE_VERSION  pin to a specific tag (default: latest)
 #   $env:SPINDLE_PREFIX   install location (default: $HOME\AppData\Local\Programs\spindle)
-#   $env:SPINDLE_REPO     override the GitHub repo (default: Kelley-Austin/Spindle)
+#   $env:SPINDLE_REPO     override the GitHub repo (default: Marceswan/Spindle)
 
 $ErrorActionPreference = "Stop"
 
-$Repo    = if ($env:SPINDLE_REPO) { $env:SPINDLE_REPO } else { "Kelley-Austin/Spindle" }
+$Repo    = if ($env:SPINDLE_REPO) { $env:SPINDLE_REPO } else { "Marceswan/Spindle" }
 $Version = if ($env:SPINDLE_VERSION) { $env:SPINDLE_VERSION } else { "latest" }
 
 # ---------- GitHub auth (needed for private/internal repos) ----------

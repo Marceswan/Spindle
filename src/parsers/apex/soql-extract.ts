@@ -1,99 +1,115 @@
-// v1 SOQL/SOSL extraction strategy: regex. See section 6.4 of the design doc.
-// Returns the FROM-clause SObject name.
+// SOQL uses the same ANTLR grammar as Apex; never recover boundaries with regex.
+import { ApexLexer, ApexParser, CaseInsensitiveInputStream, QueryContext, SubQueryContext,
+  FieldNameContext, SoqlFunctionContext, FromNameListContext, GroupByClauseContext, BoundExpressionContext, TypeOfContext } from "@apexdevtools/apex-parser";
+import { CharStreams, CommonTokenStream, ParserRuleContext, Token } from "antlr4ts";
+import { Interval } from "antlr4ts/misc/Interval";
 
-// node.text in ANTLR strips all whitespace from the token stream, producing strings like
-// "[SELECTId,NameFROMAccount]". The regex must handle both spaced and unspaced forms.
-// SObject names are followed by SOQL continuation keywords (WHERE, ORDER, LIMIT, etc.) or
-// end of string. We use a lookahead to stop the capture before the next keyword.
-// The (?=...) lookahead matches the known SOQL keywords that can follow the SObject name.
-const SOQL_FROM =
-  /FROM\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s|WHERE|ORDER|GROUP|LIMIT|OFFSET|HAVING|WITH|FOR|UPDATE|USING|TYPEOF|\]|$)/gi;
-const SOSL_RETURNING =
-  /RETURNING\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s|\(|,|\]|$)/gi;
-
-export type SoqlInfo = {
+export type SoqlField = { path: string; context: string; object?: string };
+export type SoqlQuery = {
   fromObject: string;
+  relationship: boolean;
+  parent: number | null;
+  fields: SoqlField[];
 };
+export type SoqlInfo = { fromObject: string; queries: SoqlQuery[]; warnings: string[] };
 
-// Field-list capture: match between `SELECT` and the first `FROM`. Robust to ANTLR's
-// whitespace-stripped node.text (e.g. "SELECTId,NameFROMCustomer__c"). Non-greedy capture
-// stops at the first FROM — subqueries land in v0.3 with a proper SOQL parser.
-const SOQL_SELECT_BLOCK = /SELECT\s*(.+?)\s*FROM/i;
-
-export function extractSoqlFromObject(soqlLiteral: string): SoqlInfo | null {
-  // soqlLiteral may include leading/trailing brackets and whitespace.
-  // ANTLR's node.text concatenates tokens without spaces, so we receive strings like
-  // "[SELECTId,NameFROMAccountWHEREIsDeleted=FALSE]" or properly spaced source.
-  // We find all FROM<identifier> occurrences and take the last one (handles subqueries).
-  const inner = soqlLiteral.replace(/^\s*\[/, "").replace(/\]\s*$/, "");
-  // Reset lastIndex since SOQL_FROM is a global regex.
-  SOQL_FROM.lastIndex = 0;
-  let lastMatch: RegExpExecArray | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = SOQL_FROM.exec(inner)) !== null) {
-    lastMatch = m;
-  }
-  if (lastMatch === null) return null;
-  const fromObject = lastMatch[1];
-  if (fromObject === undefined) return null;
-  return { fromObject };
+/** Original character interval, including whitespace and comments skipped by the lexer. */
+export function originalText(node: ParserRuleContext): string {
+  return node.start.inputStream?.getText(Interval.of(node.start.startIndex, node.stop?.stopIndex ?? node.start.stopIndex)) ?? "";
 }
 
-/**
- * Returns the simple bare-identifier field list from a SELECT clause. Filters out aggregates
- * (COUNT(Id), MAX(Field), …), subquery shapes, and dotted relationship traversals
- * (Account.Owner.Name) — those land in v0.3 with a proper SOQL parser. The aim of v0.2 is
- * to feed REFERENCES_FIELD edges for the dominant simple case.
- *
- * Works on both whitespace-preserved source and ANTLR's whitespace-stripped node.text
- * (e.g. "[SELECTId,NameFROMCustomer__c]").
- */
-export function extractSoqlSelectFields(soqlLiteral: string): string[] {
-  const inner = soqlLiteral.replace(/^\s*\[/, "").replace(/\]\s*$/, "");
-  SOQL_SELECT_BLOCK.lastIndex = 0;
-  const matched = SOQL_SELECT_BLOCK.exec(inner);
-  if (matched === null) return [];
-  const rawList = matched[1];
-  if (rawList === undefined) return [];
+/** Parse complete SOQL, with or without Apex brackets. Invalid input fails closed. */
+export function parseSoql(source: string): SoqlInfo | null {
+  const trimmed = source.trim();
+  const inner = trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
+  let errors = 0;
+  const lexer = new ApexLexer(new CaseInsensitiveInputStream(CharStreams.fromString(inner)));
+  lexer.removeErrorListeners();
+  lexer.addErrorListener({ syntaxError: () => { errors++; } });
+  const tokens = new CommonTokenStream(lexer);
+  const parser = new ApexParser(tokens);
+  parser.removeErrorListeners();
+  parser.addErrorListener({ syntaxError: () => { errors++; } });
+  try {
+    const tree = parser.query();
+    if (errors || tokens.LA(1) !== Token.EOF) return null;
+    return extractQueryTree(tree);
+  } catch { return null; }
+}
 
-  // Split on commas at paren depth 0.
-  const fields: string[] = [];
-  let depth = 0;
-  let current = "";
-  for (const ch of rawList) {
-    if (ch === "(") depth++;
-    else if (ch === ")") depth = Math.max(0, depth - 1);
-    else if (ch === "," && depth === 0) {
-      fields.push(current);
-      current = "";
-      continue;
+function extractQueryTree(tree: QueryContext): SoqlInfo | null {
+  const queries: SoqlQuery[] = [];
+  const warnings: string[] = [];
+  function query(node: QueryContext | SubQueryContext, parent: number | null, relationship: boolean): void {
+    const from = node.fromNameList();
+    const fromObject = from.fieldName(0).text;
+    if (from.fieldName().length > 1) warnings.push("Multiple FROM sources are parsed, but references outside the first source require metadata alias resolution");
+    const alias = from.soqlId()[0]?.text;
+    const index = queries.length;
+    const selected = node instanceof QueryContext ? node.selectList().selectEntry() : node.subFieldList().subFieldEntry();
+    const resultAliases = new Set(selected.map(entry => entry.soqlId()?.text.toLowerCase()).filter((name): name is string => name !== undefined));
+    const scope: SoqlQuery = { fromObject, parent, relationship, fields: [] };
+    queries.push(scope);
+    const add = (path: string, context: string, object?: string): void => {
+      if (context !== "SOQL_SELECT" && resultAliases.has(path.toLowerCase())) return;
+      const parts = path.split(".");
+      if (parts.length > 1 && (parts[0]?.toLowerCase() === alias?.toLowerCase() || parts[0]?.toLowerCase() === fromObject.toLowerCase())) parts.shift();
+      const field: SoqlField = {path: parts.join("."), context, ...(object ? {object} : {})};
+      if (!scope.fields.some(f => f.path.toLowerCase() === field.path.toLowerCase() && f.context === context && f.object === object)) scope.fields.push(field);
+    };
+    function walk(ctx: ParserRuleContext, context: string): void {
+      if (ctx instanceof FromNameListContext || ctx instanceof BoundExpressionContext) return;
+      if (ctx instanceof SoqlFunctionContext && ctx.FIELDS()) {
+        warnings.push("FIELDS expansion depends on org schema; individual field references are not enumerated");
+        return;
+      }
+      if (ctx instanceof QueryContext || ctx instanceof SubQueryContext) {
+        query(ctx, index, context === "SOQL_SELECT");
+        return;
+      }
+      if (ctx instanceof GroupByClauseContext) {
+        const list = ctx.selectList();
+        if (list) for (const entry of list.selectEntry()) walk(entry,"SOQL_GROUP_BY");
+        for (const field of ctx.fieldName()) add(field.text,"SOQL_GROUP_BY");
+        const having = ctx.logicalExpression();
+        if (having) walk(having,"SOQL_HAVING");
+        return;
+      }
+      if (ctx instanceof TypeOfContext) {
+        for (const branch of ctx.whenClause()) {
+          for (const field of branch.fieldNameList().fieldName()) add(field.text, context, branch.fieldName().text);
+        }
+        for (const field of ctx.elseClause()?.fieldNameList().fieldName() ?? []) add(`${ctx.fieldName().text}.${field.text}`, context);
+        return;
+      }
+      if (ctx instanceof FieldNameContext) { add(ctx.text, context); return; }
+      const name = ctx.constructor.name;
+      const clauses: Record<string,string> = {SelectListContext:"SOQL_SELECT",SubFieldListContext:"SOQL_SELECT",WhereClauseContext:"SOQL_WHERE",GroupByClauseContext:"SOQL_GROUP_BY",HavingClauseContext:"SOQL_HAVING",OrderByClauseContext:"SOQL_ORDER_BY"};
+      const next = clauses[name] ?? context;
+      for (let i=0; i<ctx.childCount; i++) {
+        const child = ctx.getChild(i);
+        if (child instanceof ParserRuleContext) walk(child,next);
+      }
     }
-    current += ch;
+    for (let i=0;i<node.childCount;i++) {
+      const child = node.getChild(i);
+      if (child instanceof ParserRuleContext) walk(child,"SOQL_SELECT");
+    }
   }
-  if (current.length > 0) fields.push(current);
-
-  const out: string[] = [];
-  for (const raw of fields) {
-    const trimmed = raw.trim();
-    if (trimmed.length === 0) continue;
-    // Reject dotted (relationship traversal) and parenthesized (aggregate / subquery) forms.
-    if (trimmed.includes(".") || trimmed.includes("(")) continue;
-    // Allow a trailing alias: "Email__c emailField" — keep only the first token.
-    const firstTok = trimmed.split(/\s+/)[0];
-    if (firstTok === undefined) continue;
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(firstTok)) continue;
-    out.push(firstTok);
-  }
-  return out;
+  query(tree,null,false);
+  const root = queries[0];
+  return root ? {fromObject:root.fromObject,queries,warnings} : null;
 }
 
-export function extractSoslReturningObjects(soslLiteral: string): string[] {
-  const inner = soslLiteral.replace(/^\s*\[/, "").replace(/\]\s*$/, "");
+export function extractSoqlFromObject(source: string): SoqlInfo | null { return parseSoql(source); }
+export function extractSoqlSelectFields(source: string): string[] {
+  return parseSoql(source)?.queries[0]?.fields.filter(f=>f.context === "SOQL_SELECT").map(f=>f.path) ?? [];
+}
+
+// SOSL is a separate language; retained independently from the SOQL parser.
+export function extractSoslReturningObjects(source: string): string[] {
   const out: string[] = [];
-  let matched: RegExpExecArray | null;
-  while ((matched = SOSL_RETURNING.exec(inner)) !== null) {
-    const name = matched[1];
-    if (name !== undefined) out.push(name);
-  }
+  const pattern = /RETURNING\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s|\(|,|\]|$)/gi;
+  for (const match of source.matchAll(pattern)) if (match[1]) out.push(match[1]);
   return out;
 }

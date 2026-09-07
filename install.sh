@@ -3,16 +3,16 @@
 # Downloads the latest release binary for your platform, verifies its SHA256, and installs it.
 #
 # Quick install:
-#   curl -fsSL https://raw.githubusercontent.com/Kelley-Austin/Spindle/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Marceswan/Spindle/main/install.sh | sh
 #
 # Options (set via env var before the curl):
 #   SPINDLE_VERSION   pin to a specific tag (default: latest)
 #   SPINDLE_PREFIX    install location (default: /usr/local/bin, falls back to ~/.local/bin)
-#   SPINDLE_REPO      override the GitHub repo (default: Kelley-Austin/Spindle)
+#   SPINDLE_REPO      override the GitHub repo (default: Marceswan/Spindle)
 
 set -eu
 
-REPO="${SPINDLE_REPO:-Kelley-Austin/Spindle}"
+REPO="${SPINDLE_REPO:-Marceswan/Spindle}"
 VERSION="${SPINDLE_VERSION:-latest}"
 
 # ---------- GitHub auth (needed for private/internal repos) ----------

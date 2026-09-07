@@ -1,4 +1,5 @@
 import type { GraphStore } from "../graph/store.ts";
+import * as toolDiffProjects from "../tools/diff-projects.ts";
 import * as toolIndexProject from "../tools/index-project.ts";
 import * as toolListProjects from "../tools/list-projects.ts";
 import * as toolGetSchema from "../tools/get-schema.ts";
@@ -20,6 +21,7 @@ type ToolWithStore = {
 };
 
 export const toolsWithStore: ToolWithStore[] = [
+  toolDiffProjects,
   {
     name: toolIndexProject.name,
     description: toolIndexProject.description,

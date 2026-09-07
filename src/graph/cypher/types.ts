@@ -1,5 +1,5 @@
 // Shared AST types for the Cypher subset parser.
-// Covers the v0.5 supported subset: MATCH, WHERE, RETURN, ORDER BY, LIMIT, SKIP.
+// Covers the supported subset: MATCH, OPTIONAL MATCH, WITH, WHERE, RETURN, ORDER BY, LIMIT, SKIP.
 
 // ---------------------------------------------------------------------------
 // Literals
@@ -120,7 +120,7 @@ export type ReturnProp = { kind: "prop"; variable: string; property: string };
 // RETURN count(*) or count(n)
 export type ReturnCount = { kind: "count"; arg: string };
 
-export type ReturnItem = ReturnVariable | ReturnProp | ReturnCount;
+export type ReturnItem = (ReturnVariable | ReturnProp | ReturnCount) & { alias?: string };
 
 // ---------------------------------------------------------------------------
 // ORDER BY
@@ -135,7 +135,12 @@ export type OrderByClause = {
 // Full query
 // ---------------------------------------------------------------------------
 
+export type MatchClause = { kind: "match"; pattern: MatchPattern; optional: boolean; where?: WherePredicate };
+export type ProjectionClause = { kind: "with" | "return"; items: ReturnItem[]; distinct: boolean; where?: WherePredicate; orderBy?: OrderByClause; skip?: number; limit?: number };
+export type QueryClause = MatchClause | ProjectionClause;
+
 export type CypherQuery = {
+  clauses: QueryClause[];
   match: MatchPattern;
   where?: WherePredicate;
   returnItems: ReturnItem[];

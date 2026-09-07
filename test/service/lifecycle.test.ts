@@ -79,7 +79,7 @@ test("MCP adapters share service and release connections on transport close", as
     const status = await probe.request("status") as { pid: number; clients: number };
     expect(status.clients).toBe(3);
     await probe.close();
-    expect((await clients[0]!.listTools()).tools.length).toBe(9);
+    expect((await clients[0]!.listTools()).tools.length).toBe(10);
     await clients[0]!.close();
     expect((await clients[1]!.callTool({ name: "list_projects", arguments: {} })).isError).not.toBe(true);
     await clients[1]!.close();

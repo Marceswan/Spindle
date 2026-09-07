@@ -1378,3 +1378,33 @@ has_more is false before treating a search result as complete for the current in
 
 See `docs/optimization-notes.md` for the upstream revision reviewed, repeatable
 measurements, verification scope, and explicitly deferred work.
+
+
+## 20. v1.2 implemented scope (September 2026)
+
+The roadmap extraction and tooling milestones are implemented. Static SOQL uses the
+existing ANTLR Apex grammar and original source intervals, with clause-aware fields,
+nested scopes, and metadata-backed relationship resolution. Dynamic SOQL and wildcard
+field expansion remain explicit limitations. Flow XML extraction resolves typed record
+variables and decision/assignment/formula references; formula confidence remains
+heuristic and relationship traversal and screen-specific extraction are incomplete.
+
+Cypher compiles MATCH/OPTIONAL MATCH/WITH into parameterized CTE stages. Optional
+predicates stay in join semantics and WITH resets scope. Node and edge project
+isolation applies at every stage. One directed edge per MATCH, one ORDER BY key,
+the existing predicate subset, and count-only aggregation are deliberate boundaries.
+
+Snapshot diff compares semantic node/edge identities and properties across separately
+indexed projects, optionally including source hashes. It ignores paths, IDs, and line
+movement and returns bounded pages. It does not connect to Salesforce orgs.
+
+The loopback web UI uses a random bearer token delivered via URL fragment, GET-only
+API allowlisting, Host/Origin checks, and CSP. Its ServiceClient shares the same graph
+process as MCP clients; it never opens its own GraphStore.
+
+Self-update embeds a trusted public key at compilation and verifies a detached GPG
+signature on the version-bound manifest followed by the binary digest. Isolated GPG
+verification, bounded downloads, same-directory staging, an update lock, and backup
+rollback protect macOS/Linux installs. Windows replacement is manual. Release CI
+requires the public key and signing secrets; see docs/release-signing.md. No release
+is signed until maintainers complete that setup. Old indexes need a full rebuild.

@@ -1,18 +1,19 @@
 // MCP tool: query_graph — design §9.13 (v0.5).
 // Executes a Cypher-subset query against the indexed metadata graph.
 //
-// Supported in v0.5:
+// Supported:
 //   MATCH (n:Label) RETURN n
 //   MATCH (n:LabelA)-[r:EDGE_TYPE]->(m:LabelB) RETURN n, r, m
 //   MATCH (n:LabelA)<-[r:EDGE_TYPE]-(m:LabelB) RETURN n, m
 //   WHERE n.prop = / CONTAINS / STARTS WITH / ENDS WITH / IN / IS NULL / IS NOT NULL
 //   WHERE ... AND/OR ...
+//   OPTIONAL MATCH with WHERE; WITH aliases, *, DISTINCT, grouped count
 //   RETURN n, n.name, count(*)
 //   ORDER BY n.name [ASC|DESC]
 //   SKIP N  LIMIT N
 //
-// Not supported in v0.5 (returns friendly error):
-//   OPTIONAL MATCH, WITH, UNWIND, variable-length paths, CREATE/MERGE/DELETE/SET,
+// Not supported (returns friendly error):
+//   UNWIND, variable-length paths, CREATE/MERGE/DELETE/SET,
 //   aggregates beyond count (collect, sum, min, max, avg), CALL subqueries,
 //   path variables, pattern comprehensions.
 
@@ -25,10 +26,10 @@ export const name = "query_graph";
 
 export const description =
   "Execute a Cypher-subset query against the indexed metadata graph. " +
-  "Supports: MATCH with node patterns and directed relationship patterns, " +
+  "Supports: MATCH and OPTIONAL MATCH with node patterns and directed relationship patterns, WITH chaining and AS aliases, " +
   "WHERE filters (=, CONTAINS, STARTS WITH, ENDS WITH, IN, IS NULL, IS NOT NULL, AND/OR), " +
-  "RETURN (whole variables, property projections, count(*)), ORDER BY, LIMIT, SKIP. " +
-  "Not supported in v0.5: OPTIONAL MATCH, WITH, UNWIND, variable-length paths (-[*..]-), " +
+  "RETURN (whole variables, property projections, grouped count(*)/count(n)), DISTINCT, ORDER BY, LIMIT, SKIP. " +
+  "Not supported: UNWIND, variable-length paths (-[*..]-), " +
   "CREATE/MERGE/DELETE/SET (read-only graph), aggregates other than count, CALL subqueries. " +
   "For unsupported syntax, use the typed tools: search_graph, trace_references, get_field_usage, get_permission_access.";
 
@@ -75,18 +76,6 @@ type ErrorOutput = {
 // targeted error messages.
 const UNSUPPORTED_PATTERNS: Array<{ pattern: RegExp; message: string; suggestion: string }> = [
   {
-    pattern: /\bOPTIONAL\s+MATCH\b/i,
-    message: "Unsupported: OPTIONAL MATCH is not implemented in v0.5.",
-    suggestion: "Use regular MATCH. OPTIONAL MATCH support is planned for v0.6.",
-  },
-  {
-    // Match WITH as a standalone Cypher clause keyword, but NOT as part of
-    // "STARTS WITH" or "ENDS WITH" (which are valid WHERE predicates in v0.5).
-    pattern: /(?<!STARTS\s)(?<!ENDS\s)\bWITH\b/i,
-    message: "Unsupported: WITH chaining is not implemented in v0.5.",
-    suggestion: "Break your query into multiple separate query_graph calls.",
-  },
-  {
     pattern: /\bUNWIND\b/i,
     message: "Unsupported: UNWIND is not implemented in v0.5.",
     suggestion: "Use the typed search_graph tool for list-based lookups.",
@@ -124,9 +113,11 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     return out;
   }
 
+  // Ignore quoted literal contents when looking for clause keywords.
+  const syntaxOnly = query.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, "''");
   // Pre-flight: check for unsupported constructs.
   for (const { pattern, message, suggestion } of UNSUPPORTED_PATTERNS) {
-    if (pattern.test(query)) {
+    if (pattern.test(syntaxOnly)) {
       const out: ErrorOutput = { error: message, suggestion };
       return out;
     }

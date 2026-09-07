@@ -1,10 +1,12 @@
-// Recursive-descent parser for the v0.5 Cypher subset.
+// Recursive-descent parser for the read-only Cypher subset.
 // Produces a CypherQuery AST or throws a ParseError-shaped Error.
 
 import { tokenize, TokenKind } from "./tokenizer.ts";
 import type { Token } from "./tokenizer.ts";
 import type {
   CypherQuery,
+  QueryClause,
+  ProjectionClause,
   MatchPattern,
   NodePattern,
   RelPattern,
@@ -92,54 +94,49 @@ class Parser {
   // ---------------------------------------------------------------------------
 
   parse(): CypherQuery {
-    const match = this.parseMatch();
-
-    let where: WherePredicate | undefined;
-    if (this.check(TokenKind.KwWhere)) {
-      this.advance();
-      where = this.parseWherePredicate();
+    const clauses: QueryClause[] = [];
+    while (this.check(TokenKind.KwMatch) || this.check(TokenKind.KwOptionalMatch) || this.check(TokenKind.KwWith)) {
+      if (this.tryConsume(TokenKind.KwWith)) {
+        if (clauses.length === 0) throw new ParseFailure("Query must start with MATCH or OPTIONAL MATCH", this.currentCol());
+        clauses.push(this.parseProjection("with"));
+      } else {
+        const optional = this.check(TokenKind.KwOptionalMatch);
+        const pattern = this.parseMatch();
+        const where = this.tryConsume(TokenKind.KwWhere) ? this.parseWherePredicate() : undefined;
+        clauses.push({ kind: "match", pattern, optional, ...(where ? { where } : {}) });
+      }
     }
-
+    const first = clauses[0];
+    if (!first || first.kind !== "match") throw new ParseFailure("Expected MATCH or OPTIONAL MATCH", this.currentCol());
     this.expect(TokenKind.KwReturn);
-    const returnItems = this.parseReturnItems();
+    const last = this.parseProjection("return");
+    clauses.push(last);
+    this.expect(TokenKind.EOF);
+    return { clauses, match: first.pattern, returnItems: last.items,
+      ...(first.where ? { where: first.where } : {}),
+      ...(last.orderBy ? { orderBy: last.orderBy } : {}),
+      ...(last.limit !== undefined ? { limit: last.limit } : {}),
+      ...(last.skip !== undefined ? { skip: last.skip } : {}) };
+  }
 
-    let orderBy: OrderByClause | undefined;
-    if (this.check(TokenKind.KwOrderBy)) {
-      this.advance();
-      orderBy = this.parseOrderBy();
-    }
+  private parseProjection(kind: "with" | "return"): ProjectionClause {
+    const distinct = this.tryConsume(TokenKind.KwDistinct) !== null;
+    const items = this.parseReturnItems();
+    const clause: ProjectionClause = { kind, items, distinct };
+    // Cypher attaches WHERE to WITH; accept it before or after its pagination.
+    if (kind === "with" && this.tryConsume(TokenKind.KwWhere)) clause.where = this.parseWherePredicate();
+    if (this.tryConsume(TokenKind.KwOrderBy)) clause.orderBy = this.parseOrderBy();
+    if (this.tryConsume(TokenKind.KwSkip)) clause.skip = this.parsePageSize();
+    if (this.tryConsume(TokenKind.KwLimit)) clause.limit = this.parsePageSize();
+    if (kind === "with" && !clause.where && this.tryConsume(TokenKind.KwWhere)) clause.where = this.parseWherePredicate();
+    return clause;
+  }
 
-    let skip: number | undefined;
-    if (this.check(TokenKind.KwSkip)) {
-      this.advance();
-      const t = this.expect(TokenKind.NumberLit);
-      skip = parseInt(t.text, 10);
-    }
-
-    let limit: number | undefined;
-    if (this.check(TokenKind.KwLimit)) {
-      this.advance();
-      const t = this.expect(TokenKind.NumberLit);
-      limit = parseInt(t.text, 10);
-    }
-
-    if (!this.check(TokenKind.EOF)) {
-      const t = this.peek();
-      throw new ParseFailure(
-        `Unexpected token '${t.text}' after query end`,
-        t.column,
-      );
-    }
-
-    const query: CypherQuery = {
-      match,
-      returnItems,
-      ...(where !== undefined ? { where } : {}),
-      ...(orderBy !== undefined ? { orderBy } : {}),
-      ...(limit !== undefined ? { limit } : {}),
-      ...(skip !== undefined ? { skip } : {}),
-    };
-    return query;
+  private parsePageSize(): number {
+    const t = this.expect(TokenKind.NumberLit);
+    const value = Number(t.text);
+    if (!Number.isSafeInteger(value) || value < 0) throw new ParseFailure("LIMIT and SKIP require nonnegative safe integers", t.column);
+    return value;
   }
 
   // ---------------------------------------------------------------------------
@@ -147,17 +144,7 @@ class Parser {
   // ---------------------------------------------------------------------------
 
   private parseMatch(): MatchPattern {
-    const t = this.peek();
-
-    // Detect OPTIONAL MATCH upfront and reject it.
-    if (t.kind === TokenKind.KwOptionalMatch) {
-      throw new ParseFailure(
-        "Unsupported: OPTIONAL MATCH is not implemented in v0.5. Use regular MATCH.",
-        t.column,
-      );
-    }
-
-    this.expect(TokenKind.KwMatch);
+    if (!this.tryConsume(TokenKind.KwOptionalMatch)) this.expect(TokenKind.KwMatch);
     this.expect(TokenKind.LParen);
 
     const leftVar = this.parseVariableName();
@@ -355,7 +342,7 @@ class Parser {
       );
     }
     this.advance();
-    this.expect(TokenKind.Dot);
+    if (!this.tryConsume(TokenKind.Dot)) return { kind: "prop", variable: varTok.text, property: "" };
     const propTok = this.peek();
     if (propTok.kind !== TokenKind.Ident) {
       throw new ParseFailure(
@@ -422,16 +409,23 @@ class Parser {
 
   private parseReturnItems(): ReturnItem[] {
     const items: ReturnItem[] = [];
-    items.push(this.parseReturnItem());
+    items.push(this.parseAliasedItem());
     while (this.check(TokenKind.Comma)) {
       this.advance();
-      items.push(this.parseReturnItem());
+      items.push(this.parseAliasedItem());
     }
     return items;
   }
 
+  private parseAliasedItem(): ReturnItem {
+    const item = this.parseReturnItem();
+    if (this.tryConsume(TokenKind.KwAs)) item.alias = this.expect(TokenKind.Ident).text;
+    return item;
+  }
+
   private parseReturnItem(): ReturnItem {
     const t = this.peek();
+    if (this.tryConsume(TokenKind.Star)) return { kind: "variable", name: "*" };
 
     // count(*) or count(n)
     if (t.kind === TokenKind.KwCount) {

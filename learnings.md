@@ -221,3 +221,11 @@ the same qname with `isPlaceholder: false` when it parses a real `.object-meta.x
 
 **Don't** filter placeholders out of search results; the user might want to know that
 their code references an object whose metadata isn't tracked.
+
+
+## v1.2 SOQL extraction supersedes regex guidance
+
+Use original source intervals and the Apex grammar query tree for static SOQL, not
+`node.text` or a whitespace-tolerant regex. Preserve nested query scope and each
+field's clause context through edge resolution and get_field_usage. Bind variables
+are Apex expressions, not fields. Dynamic queries must remain unresolved warnings.

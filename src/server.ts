@@ -3,10 +3,11 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
 import { connectService, type ServiceClient } from "./service/client.ts";
+import { VERSION } from "./version.ts";
 import { logger } from "./util/logger.ts";
 
 export async function startServer(): Promise<void> {
-  const server = new Server({ name: "sfdx-graph-mcp", version: "1.1.2" }, { capabilities: { tools: {} } });
+  const server = new Server({ name: "sfdx-graph-mcp", version: VERSION }, { capabilities: { tools: {} } });
   let client: ServiceClient | undefined;
   let stopping = false;
   const shutdown = async (): Promise<void> => {

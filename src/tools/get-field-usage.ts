@@ -23,8 +23,8 @@ export const name = "get_field_usage";
 export const description =
   "Find every reference to a Salesforce field across all metadata types. The killer query for impact analysis. " +
   "Returns Apex methods that SOQL or DML the parent SObject, LWC bundles importing via @salesforce/schema, " +
-  "Visualforce pages binding via {!Object.Field}, validation rules with formula references, and (in later " +
-  "phases) Aura components, flows, layouts, and permission sets.";
+  "Visualforce bindings, validation formulas, layouts and Flow fields resolved from record variables, " +
+  "decisions, assignments and formulas. Flow relationship traversal and screen/choice field declarations remain incomplete.";
 
 export const inputSchema = {
   type: "object",
@@ -39,7 +39,7 @@ export const inputSchema = {
       description:
         "Include indirect references via the parent SObject (Apex SOQL/DML). Default true; " +
         "set false to limit to direct field-level references (LWC schema imports, VF bindings, " +
-        "validation-rule formulas, formula fields).",
+        "validation-rule formulas, formula fields, statically bound Flow fields).",
     },
   },
   required: ["project_id", "field"],
@@ -102,7 +102,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     coverage: {
       authoritative: ["lwc_bundles", "vf_pages", "vf_components", "validation_rules", "layouts"],
       indirect: ["apex_methods", "flows"],
-      pending: ["aura_components", "permission_sets", "email_templates", "formula_fields"],
+      pending: ["aura_components", "permission_sets", "email_templates", "formula_fields", "flow_relationship_traversal", "flow_screen_choice_fields"],
     },
   };
 
@@ -115,23 +115,25 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     source_file: string | null;
     source_line: number | null;
     edge_type: string;
+    usage_context: string | null;
   };
   const directRows = store.db
-    .query<Row, [number, string, string, string, string, string, string, string, string, string]>(
-      `SELECT
+    .query<Row, [number, string, string, string, string, string, string, string, string, string, string]>(
+      `SELECT DISTINCT
          s.label AS source_label,
          s.name AS source_name,
          s.qualified_name AS source_qname,
          s.file_path AS source_file,
          e.source_line AS source_line,
-         e.edge_type AS edge_type
+         e.edge_type AS edge_type,
+         CASE WHEN s.label = 'ApexMethod' THEN json_extract(e.properties, '$.context') END AS usage_context
        FROM edges e
        JOIN nodes s ON s.id = e.source_id
        JOIN nodes t ON t.id = e.target_id
        WHERE e.project_id = ?
          AND t.label = ?
          AND t.qualified_name = ?
-         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?)`,
+         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .all(
       project_id,
@@ -144,6 +146,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       EdgeType.ReferencesField,
       EdgeType.LayoutIncludesField,
       EdgeType.FlexipageReferencesField,
+      EdgeType.FlowUsesField,
     );
 
   for (const row of directRows) {
@@ -169,10 +172,10 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     } else if (row.source_label === NodeLabel.Flow) {
       report.flows.push(usage);
     } else if (row.source_label === NodeLabel.ApexMethod) {
-      // Direct REFERENCES_FIELD edge from a SOQL SELECT clause (v0.2 task #15). This is the
+      // Direct REFERENCES_FIELD edge from a parsed SOQL clause. This is the
       // most precise Apex bucket; takes priority over the indirect SObject-level approximation
       // below, which is now redundant for fields whose object has metadata in the graph.
-      report.apex_methods.push({ ...usage, context: "SOQL_SELECT" });
+      report.apex_methods.push({ ...usage, context: row.usage_context ?? "SOQL_SELECT" });
     } else if (row.source_label === NodeLabel.Layout) {
       report.layouts.push(usage);
     } else if (row.source_label === NodeLabel.FlexiPage) {

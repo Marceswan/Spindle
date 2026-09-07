@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+  <apiVersion>65.0</apiVersion><status>Active</status><processType>AutoLaunchedFlow</processType>
+  <start><object>Customer__c</object><triggerType>RecordBeforeSave</triggerType><filters><field>Email__c</field><operator>IsNull</operator><value><booleanValue>false</booleanValue></value></filters></start>
+  <variables><name>customer</name><dataType>SObject</dataType><objectType>Customer__c</objectType><isCollection>false</isCollection></variables>
+  <variables><name>textValue</name><dataType>String</dataType></variables>
+  <recordLookups><name>GetCustomer</name><object>Customer__c</object><storeOutputAutomatically>true</storeOutputAutomatically><queriedFields>Email__c</queriedFields><filters><field>Name</field><value><elementReference>$Record.Name</elementReference></value></filters></recordLookups>
+  <recordLookups><name>ExplicitCustomer</name><object>Customer__c</object><outputReference>customer</outputReference><outputAssignments><field>Email__c</field><assignToReference>textValue</assignToReference></outputAssignments></recordLookups>
+  <assignments><name>SetEmail</name><assignmentItems><assignToReference>customer.Email__c</assignToReference><operator>Assign</operator><value><elementReference>GetCustomer.Email__c</elementReference></value></assignmentItems></assignments>
+  <decisions><name>CheckEmail</name><rules><name>Changed</name><conditions><leftValueReference>$Record.Email__c</leftValueReference><operator>NotEqualTo</operator><rightValue><elementReference>$Record__Prior.Email__c</elementReference></rightValue></conditions></rules></decisions>
+  <formulas><name>DisplayEmail</name><dataType>String</dataType><expression>IF(ISBLANK({!customer.Email__c}), {!$Record.Email__c}, {!GetCustomer.Email__c}) &amp; &quot;customer.Fake__c&quot;</expression></formulas>
+  <recordUpdates><name>SaveCustomer</name><inputReference>customer</inputReference></recordUpdates>
+</Flow>
