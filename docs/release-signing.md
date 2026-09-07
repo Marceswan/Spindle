@@ -5,6 +5,30 @@ signature on `SHA256SUMS`, then verifies the selected binary's SHA256, before re
 anything. The trusted public key is embedded at build time. Runtime environment
 variables and downloaded public keys cannot override it.
 
+## Configured signing key
+
+The committed public key has fingerprint:
+
+`0B45706D3BC5124FDE991DAC2734AFB0CEF8A235`
+
+It belongs to `marceswan <marc.e.swan@gmail.com>` and has signing capability.
+The `B9AD03F84F485E54796DAAE482F32E13A1DC2F80` subkey is encryption-only;
+the workflow selects the primary signing key using the fingerprint above.
+
+To provision the two GitHub Actions secrets from your own terminal, run:
+
+```sh
+set -o pipefail
+gpg --armor --export-secret-keys 0B45706D3BC5124FDE991DAC2734AFB0CEF8A235 | gh secret set RELEASE_GPG_PRIVATE_KEY --repo Marceswan/Spindle
+gh secret set RELEASE_GPG_PASSPHRASE --repo Marceswan/Spindle
+```
+
+The first command sends the armored private-key export directly into GitHub's secret
+storage without a temporary file or terminal output. Enter the key passphrase in the
+second command's hidden prompt. Do not paste either value into chat. The revocation
+certificate stays private and is not uploaded. Confirm secret names with
+`gh secret list --repo Marceswan/Spindle` before creating a release tag.
+
 ## One-time maintainer setup
 
 1. Create a dedicated OpenPGP signing key on your trusted machine, using GPG's
