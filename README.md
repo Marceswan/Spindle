@@ -319,6 +319,10 @@ There is no paid tier and no commercial license. GitHub Sponsors is the only opt
 
 ## Current Workbench scope
 
-The four tabs provide savings totals/by-tool estimates, graph search/neighborhoods, field-impact reports and metadata permission grants. Explore label/edge filters and “show more,” a savings timeline, and a method-to-class permission picker remain follow-up UI work. Select the declaring Apex class for class-access metadata today; this is not a user effective-access evaluator. The original UI design describes those intended controls, not all currently implemented behavior.
+The four tabs provide savings totals/by-tool estimates, a daily savings timeline, graph search/neighborhoods, field-impact reports and metadata permission grants. Explore filters traversal by node label and edge type, expands up to five hops, and loads additional nodes in batches of 500 up to 2,000. Traversal also limits results to 5,000 edges and processes at most 10,000 candidate edges; the UI explains the limiting condition. Narrow filters or re-center when an edge/work limit is reached. The center node stays visible regardless of filters.
+
+Explore loads on demand. Graph updates preserve retained node positions and zoom; use **Fit graph** to bring added nodes into view, or re-center to arrange a new neighborhood. The timeline uses UTC dates, fills inactive days with zeros, and offers 30-day, 90-day and full-history views ending at the latest recorded activity.
+
+The Permissions tab can search indexed Apex methods and resolve their declaring class through the graph before displaying class-access grants. These reports describe metadata grants, not effective access for an individual Salesforce user. See [UI follow-up validation](docs/reviews/2026-11-03-ui-follow-ups.md) for behavior and test evidence.
 
 Metrics persist counters and allowlisted identifiers, never new freeform query/source payloads. Historical rows are not rewritten by this change. See [remediation validation](docs/reviews/2026-11-03-remediation-results.md) for test evidence and limits.

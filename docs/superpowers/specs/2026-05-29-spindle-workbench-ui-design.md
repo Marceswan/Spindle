@@ -1,6 +1,6 @@
 # Spindle Workbench — local UI for graph exploration and savings
 
-> Implementation update (2026-11-03): one authenticated shared service now owns the database, all project watchers, HTTP MCP and the Workbench on 127.0.0.1:47839; stdio is a forwarding adapter. Changed projects rebuild atomically. Earlier per-client ownership, unauthenticated UI, and file-only incremental descriptions are superseded. Explore filters/expansion, savings timeline and method picker remain planned. See `docs/reviews/2026-11-03-remediation-results.md` for implemented scope and evidence.
+> Implementation update (2026-11-03): one authenticated shared service now owns the database, all project watchers, HTTP MCP and the Workbench on 127.0.0.1:47839; stdio is a forwarding adapter. Changed projects rebuild atomically. Earlier per-client ownership, unauthenticated UI, and file-only incremental descriptions are superseded. Explore filters/expansion, the UTC savings timeline and the method-to-class permission picker are implemented. See `docs/reviews/2026-11-03-remediation-results.md` and `docs/reviews/2026-11-03-ui-follow-ups.md` for implemented scope and evidence.
 
 **Status:** Approved (brainstorm 2026-05-29)
 **Phase:** v1.1 (promotes the web UI out of NG7)

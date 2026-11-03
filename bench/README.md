@@ -18,6 +18,17 @@ bun run bench > bench-results.md
 
 Exit code is `0` if all queries pass, `1` if any fail.
 
+## Workbench performance benchmarks
+
+```bash
+bun run bench/neighborhood.ts > /tmp/spindle-neighborhood.json
+bun run web/bench/graph-view.ts > /tmp/spindle-graph-view.json
+```
+
+The neighborhood benchmark creates isolated in-memory hub, wide and dense graphs. It reports warm p50/p95 query times, output counts, timer delay during a synchronous query and process RSS. It never connects to the shared service or a user database. Compare output sizes and truncation alongside timing: dense queries deliberately stop at the edge limit. RSS is a process snapshot, not peak or per-query allocation; the timer sample is illustrative, not a service latency percentile.
+
+The graph benchmark measures initial layout and expansion using real headless Cytoscape at 100–2,000 nodes. It measures update/layout CPU time, not canvas painting or browser frame rate. Run both on the same machine/toolchain and avoid concurrent benchmarks for useful comparisons. See [optimization results](../docs/reviews/2026-11-03-optimization-pass.md) for the initial measurements and validation limits.
+
 ## What it measures
 
 | Metric | Description |

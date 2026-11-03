@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SavingsTimeline } from "../components/savings-timeline.tsx";
 import { api, type Savings, type Schema } from "../api.ts";
 
 function fmt(n: number): string {
@@ -12,14 +13,30 @@ export function Overview({ project }: { project: number }): JSX.Element {
 
   useEffect(() => {
     let current = true;
-    setS(null); setSchema(null); setError(null);
-    Promise.all([api.savings(project), api.schema(project)]).then(([savings, schema]) => {
-      if (current) {setS(savings); setSchema(schema);}
-    }).catch((error: Error) => {if (current) setError(error.message);});
-    return () => {current = false;};
+    setS(null);
+    setSchema(null);
+    setError(null);
+    Promise.all([api.savings(project), api.schema(project)])
+      .then(([savings, schema]) => {
+        if (current) {
+          setS(savings);
+          setSchema(schema);
+        }
+      })
+      .catch((error: Error) => {
+        if (current) setError(error.message);
+      });
+    return () => {
+      current = false;
+    };
   }, [project]);
 
-  if (error) return <p role="alert">Cannot load overview: {error}. Reopen this tab to retry.</p>;
+  if (error)
+    return (
+      <p role="alert">
+        Cannot load overview: {error}. Reopen this tab to retry.
+      </p>
+    );
   if (s === null) return <p>Loading savings…</p>;
 
   const minutes = Math.round(s.totalTokensSaved / 1000); // ~1k tokens/min reading, rough
@@ -42,7 +59,10 @@ export function Overview({ project }: { project: number }): JSX.Element {
         </div>
         <div className="kpi">
           <b>~{fmt(minutes)}m</b>
-          <span className="tooltip" title="approx tokens saved / 1000 tokens-per-minute reading">
+          <span
+            className="tooltip"
+            title="approx tokens saved / 1000 tokens-per-minute reading"
+          >
             reading avoided
           </span>
         </div>
@@ -61,16 +81,25 @@ export function Overview({ project }: { project: number }): JSX.Element {
           (how?)
         </span>
       </h3>
-      {s.perTool.length === 0 && <p>No tool calls recorded yet. Use Spindle's MCP tools to populate this.</p>}
+      {s.perTool.length === 0 && (
+        <p>
+          No tool calls recorded yet. Use Spindle's MCP tools to populate this.
+        </p>
+      )}
       {s.perTool.map((t) => (
         <div className="row" key={t.toolName}>
           <div style={{ width: 170 }}>{t.toolName}</div>
-          <div className="bar" style={{ width: `${(t.tokensSaved / max) * 50}%` }} />
+          <div
+            className="bar"
+            style={{ width: `${(t.tokensSaved / max) * 50}%` }}
+          />
           <div>
             {fmt(t.tokensSaved)} ({t.calls})
           </div>
         </div>
       ))}
+
+      <SavingsTimeline timeline={s.timeline} />
 
       <h3>Corpus</h3>
       {schema &&

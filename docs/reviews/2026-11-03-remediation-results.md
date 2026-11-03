@@ -1,6 +1,6 @@
 # Remediation results — 2026-11-03
 
-The confirmed review findings R1–R18 are addressed in the working tree on `codex/review-remediation`. The user-selected architecture is one shared background service for all projects and clients. No release, push or merge was performed. Preexisting user changes remain intact; recovered conflict copies are retained under ignored `.recovery/`.
+The confirmed review findings R1–R18 were addressed on `codex/review-remediation`. The user-selected architecture is one shared background service for all projects and clients. This remediation was subsequently committed as `5841075` and pushed to `Marceswan/Spindle` as Marceswan, before beginning the separately requested [UI follow-ups](2026-11-03-ui-follow-ups.md). No release or merge was performed. Recovered conflict copies are retained under ignored `.recovery/`.
 
 ## What changed
 
@@ -54,9 +54,9 @@ Bun 1.3.8 was also tested: builds and compiled smoke passed, but the complete te
 - Work in a new branch in the existing dirty checkout, with a preserved baseline, because a HEAD-only worktree would omit the application being repaired. No unrelated changes were committed. Cost: the final tree still includes the user's preexisting work and should be reviewed as such.
 - Rebuild a changed project instead of repairing incremental dependency bookkeeping prematurely. Cost: one edit reparses all files; no-change runs stay cheap. A later optimization must pass the same parity oracle.
 - Reject ambiguous whitespace-stripped standalone SOQL strings; production passes original parse contexts. Cost: callers of the standalone helper must provide valid spaced source.
-- Keep Explore label/edge filters and “show more,” the savings timeline, and the method-to-class permission picker as explicit follow-up scope, permitted by plan Task 12. Cost: those intended UI controls remain unavailable. Permission reports describe metadata grants, not effective access for a Salesforce user.
+- Explore label/edge filters and “show more,” the savings timeline, and the method-to-class permission picker were deferred from this remediation under plan Task 12, then implemented in the separately requested [UI follow-ups](2026-11-03-ui-follow-ups.md). Permission reports describe metadata grants, not effective access for a Salesforce user.
 - Historical metrics rows are preserved; the privacy fix applies to new writes. Cost: old rows may still contain previously persisted arguments. No destructive purge was performed.
 - Update the Bun pin from 1.3.8 to 1.3.14 based on the reproduced teardown failure. Cost: the supported runtime minimum changes.
 - Trusted local-user operation remains the security model. Cross-platform release execution, an independent dependency audit, and real-org corpus accuracy are not claimed by this local validation. The broader SOQL relationship/subquery terminal-resolution milestone remains separate work.
 
-The baseline/recovery files remain available because no task commits were created; deleting them would discard the only precise pre-remediation snapshot.
+The baseline/recovery files remain available to preserve the precise pre-remediation snapshot.

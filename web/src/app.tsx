@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type Project } from "./api.ts";
 import { Overview } from "./tabs/overview.tsx";
-import { Explore } from "./tabs/explore.tsx";
+const Explore = lazy(() =>
+  import("./tabs/explore.tsx").then((module) => ({ default: module.Explore })),
+);
 import { FieldImpact } from "./tabs/field-impact.tsx";
 import { Permissions } from "./tabs/permissions.tsx";
 
@@ -31,12 +33,20 @@ export function App(): JSX.Element {
     <div>
       <div className="tabs">
         {TABS.map((t) => (
-          <div key={t} className={`tab ${t === tab ? "active" : ""}`} onClick={() => setTab(t)}>
+          <div
+            key={t}
+            className={`tab ${t === tab ? "active" : ""}`}
+            onClick={() => setTab(t)}
+          >
             {t}
           </div>
         ))}
         <div style={{ marginLeft: "auto" }}>
-          <select value={project ?? ""} onChange={(e) => setProject(Number(e.target.value))}>
+          <select
+            aria-label="Project"
+            value={project ?? ""}
+            onChange={(e) => setProject(Number(e.target.value))}
+          >
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} ({p.nodeCount} nodes)
@@ -46,15 +56,22 @@ export function App(): JSX.Element {
         </div>
       </div>
       <div className="page" key={project}>
-        {error && <p role="alert">Cannot load projects: {error}. Reopen the Workbench from the CLI.</p>}
+        {error && (
+          <p role="alert">
+            Cannot load projects: {error}. Reopen the Workbench from the CLI.
+          </p>
+        )}
         {project === null ? (
           <p>
-            No indexed project found. Run <code>spindle index &lt;path&gt;</code> first.
+            No indexed project found. Run{" "}
+            <code>spindle index &lt;path&gt;</code> first.
           </p>
         ) : tab === "Overview" ? (
           <Overview project={project} />
         ) : tab === "Explore" ? (
-          <Explore project={project} />
+          <Suspense fallback={<p role="status">Loading graph explorer…</p>}>
+            <Explore project={project} />
+          </Suspense>
         ) : tab === "Field Impact" ? (
           <FieldImpact project={project} />
         ) : (

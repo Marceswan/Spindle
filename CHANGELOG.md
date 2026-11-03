@@ -15,7 +15,9 @@ follow SemVer once a v1.0 binary ships.
 - Rebuild changed project inventories transactionally; fix stale edges, deletions, search limits, Cypher literal/operator/count behavior and cross-project neighborhood leaks.
 - Extract SOQL fields from actual Apex parse contexts; complete Flow RHS/output references, preserve field-usage contexts, filter denied permission entries and scan Aura helpers.
 - Ignore stale Workbench responses, reset project-owned state and display request errors. Minimize persisted metric parameters.
-- Keep planned Explore filters/expansion, savings timeline and method picker as follow-up UI work. Package version remains 1.1.2; no release was published.
+- Add Explore node/edge filters, bounded hop expansion and “show more”; a UTC savings timeline with date ranges and daily values; and an Apex method picker that resolves declaring-class metadata grants. Cover filtering before graph caps, literal method-signature search, retries and stale responses with regression tests.
+- Batch and page neighborhood traversal, cap edges/candidate processing, and explain truncation reasons. Preserve graph positions and viewport during updates, use a breadth-first initial layout, and defer the Explore JavaScript chunk. Add synthetic query/layout benchmarks and a production bundle regression gate.
+- Package version remains 1.1.2; no release was published.
 
 The version headings below record development milestones; they are not evidence that corresponding binary releases were published.
 

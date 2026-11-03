@@ -562,47 +562,106 @@ export type Neighborhood = {
   nodes: NeighborhoodNode[];
   edges: NeighborhoodEdge[];
   truncated: boolean;
+  truncationReason?: "node_cap" | "edge_cap" | "work_budget";
 };
+
+export const NEIGHBORHOOD_LIMITS = { nodes: 2000, edges: 5000, work: 10000 } as const;
 
 export function getNeighborhood(
   store: GraphStore,
   projectId: number,
   centerId: number,
-  opts: { depth?: number; cap?: number } = {},
+  opts: {
+    depth?: number;
+    cap?: number;
+    nodeLabel?: string;
+    edgeType?: string;
+    edgeCap?: number;
+    workBudget?: number;
+  } = {},
 ): Neighborhood {
-  const cap = opts.cap ?? 500;
-  const depth = Math.max(1, opts.depth ?? 1);
-
-  const center = store.db.query<{id: number}, [number, number]>("SELECT id FROM nodes WHERE project_id = ? AND id = ?").get(projectId, centerId);
+  const cap = Math.max(1, Math.min(NEIGHBORHOOD_LIMITS.nodes, opts.cap ?? 500));
+  const depth = Math.max(0, Math.min(5, opts.depth ?? 1));
+  const edgeCap = Math.max(
+    1, Math.min(NEIGHBORHOOD_LIMITS.edges, opts.edgeCap ?? NEIGHBORHOOD_LIMITS.edges),
+  );
+  const workBudget = Math.max(
+    1, Math.min(NEIGHBORHOOD_LIMITS.work, opts.workBudget ?? NEIGHBORHOOD_LIMITS.work),
+  );
+  const center = store.db
+    .query<{ id: number }, [number, number]>(
+      "SELECT id FROM nodes WHERE project_id = ? AND id = ?",
+    )
+    .get(projectId, centerId);
   if (!center) return { centerId, nodes: [], edges: [], truncated: false };
   const visited = new Set<number>([centerId]);
   let frontier = [centerId];
   const edges = new Map<number, NeighborhoodEdge>();
-  let truncated = false;
+  let truncationReason: Neighborhood["truncationReason"];
+  let examined = 0;
 
   type ERow = { id: number; source_id: number; target_id: number; edge_type: string };
-  for (let d = 0; d < depth && frontier.length > 0 && !truncated; d++) {
+  traversal: for (let d = 0; d < depth && frontier.length > 0; d++) {
     const next: number[] = [];
-    for (const nodeId of frontier) {
-      const rows = store.db
-        .query<ERow, [number, number, number]>(
-          `SELECT id, source_id, target_id, edge_type FROM edges
-           WHERE project_id = ? AND (source_id = ? OR target_id = ?)`,
-        )
-        .all(projectId, nodeId, nodeId);
-      for (const r of rows) {
-        edges.set(r.id, { id: r.id, sourceId: r.source_id, targetId: r.target_id, edgeType: r.edge_type });
-        const other = r.source_id === nodeId ? r.target_id : r.source_id;
-        if (!visited.has(other)) {
-          if (visited.size >= cap) {
-            truncated = true;
-            break;
+    // Keep SQL bind counts and candidate pages bounded, even for dense frontiers.
+    for (let offset = 0; offset < frontier.length; offset += 100) {
+      const batch = frontier.slice(offset, offset + 100);
+      const placeholders = batch.map(() => "?").join(",");
+      let afterId = 0;
+      while (true) {
+        const values: (number | string)[] = [];
+        const branch = (outbound: boolean): string => {
+          values.push(projectId, ...batch, afterId);
+          let filter = "";
+          if (opts.edgeType) {
+            filter += " AND e.edge_type = ?";
+            values.push(opts.edgeType);
           }
-          visited.add(other);
-          next.push(other);
+          if (opts.nodeLabel) {
+            filter += ` AND (${outbound ? "t" : "s"}.label = ? OR ${outbound ? "t" : "s"}.id = ?)`;
+            values.push(opts.nodeLabel, centerId);
+          }
+          return `SELECT e.id, e.source_id, e.target_id, e.edge_type FROM edges e
+            JOIN nodes s ON s.id = e.source_id AND s.project_id = e.project_id
+            JOIN nodes t ON t.id = e.target_id AND t.project_id = e.project_id
+            WHERE e.project_id = ? AND e.${outbound ? "source_id" : "target_id"} IN (${placeholders})
+              AND e.id > ?${filter}`;
+        };
+        // UNION deduplicates edges joining two frontier nodes. One lookahead row
+        // distinguishes exactly exhausting the work budget from incomplete results.
+        const sql = `${branch(true)} UNION ${branch(false)} ORDER BY 1 LIMIT ?`;
+        const pageSize = Math.min(256, workBudget - examined + 1);
+        const rows = store.db.query<ERow, (number | string)[]>(sql)
+          .all(...values, pageSize);
+        for (const r of rows) {
+          if (examined >= workBudget) {
+            truncationReason = "work_budget";
+            break traversal;
+          }
+          examined++;
+          if (edges.has(r.id)) continue;
+          if (edges.size >= edgeCap) {
+            truncationReason = "edge_cap";
+            break traversal;
+          }
+          const missing = [r.source_id, r.target_id].filter(
+            (id, i, ids) => !visited.has(id) && ids.indexOf(id) === i,
+          );
+          if (visited.size + missing.length > cap) {
+            truncationReason = "node_cap";
+            break traversal;
+          }
+          for (const id of missing) {
+            visited.add(id);
+            next.push(id);
+          }
+          edges.set(r.id, {
+            id: r.id, sourceId: r.source_id, targetId: r.target_id, edgeType: r.edge_type,
+          });
         }
+        if (rows.length < pageSize) break;
+        afterId = rows[rows.length - 1]!.id;
       }
-      if (truncated) break;
     }
     frontier = next;
   }
@@ -613,7 +672,7 @@ export function getNeighborhood(
   const nodeRows = ids.length
     ? store.db
         .query<NRow, number[]>(
-          `SELECT id, label, name, qualified_name, file_path FROM nodes WHERE project_id = ? AND id IN (${placeholders})`,
+          `SELECT id, label, name, qualified_name, file_path FROM nodes WHERE project_id = ? AND id IN (${placeholders}) ORDER BY id`,
         )
         .all(projectId, ...ids)
     : [];
@@ -633,7 +692,8 @@ export function getNeighborhood(
       filePath: n.file_path,
     })),
     edges: keptEdges,
-    truncated,
+    truncated: truncationReason !== undefined,
+    ...(truncationReason ? { truncationReason } : {}),
   };
 }
 
@@ -684,4 +744,16 @@ export function getSavingsSummary(store: GraphStore, projectId: number): Savings
     perTool,
     timeline,
   };
+}
+
+/** Resolve the structural owner instead of splitting a method's parameterized name. */
+export function getMethodDeclaringClass(store: GraphStore, projectId: number, qualifiedName: string): string | null {
+  const row = store.db.query<{ qualified_name: string }, [number, string]>(
+    `SELECT owner.qualified_name FROM nodes method
+     JOIN edges e ON e.target_id = method.id AND e.project_id = method.project_id AND e.edge_type = 'DEFINES_METHOD'
+     JOIN nodes owner ON owner.id = e.source_id AND owner.project_id = method.project_id AND owner.label = 'ApexClass'
+     WHERE method.project_id = ? AND method.label = 'ApexMethod' AND method.qualified_name = ?
+     ORDER BY owner.id LIMIT 1`,
+  ).get(projectId, qualifiedName);
+  return row?.qualified_name ?? null;
 }

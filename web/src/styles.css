@@ -26,3 +26,15 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 td, th { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; }
 code { color: var(--muted); }
 h3 { margin: 16px 0 6px; }
+.controls { flex-wrap: wrap; gap: 10px; }
+.controls label { display: flex; align-items: center; gap: 6px; }
+.muted { color: var(--muted); font-size: 13px; }
+.notice { color: #f59e0b; }
+button:disabled { cursor: default; opacity: .5; }
+.node-details code { overflow-wrap: anywhere; min-width: 0; }
+.timeline { margin-top: 20px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.timeline h3 { margin: 0; }
+.timeline svg { display: block; width: 100%; max-height: 260px; }
+.timeline-values { max-height: 300px; overflow: auto; }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+@media (max-width: 640px) { .tabs { flex-wrap: wrap; } input, select { max-width: 100%; } }
