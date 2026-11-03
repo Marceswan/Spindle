@@ -26,6 +26,12 @@ type SymbolTable = {
   methodByQName: Map<string, StoredNode>;
   methodsByClassAndName: Map<string, StoredNode[]>;
   nodeByLabelAndQName: Map<string, StoredNode>;
+  // v0.8: short-name → Field nodes. A custom field name (`Late__c`) often exists on a
+  // single SObject; the DML-write detection in the Apex parser emits a __SHORTNAME__:
+  // qname which we resolve here. Returns the array of candidate Field nodes so callers
+  // can decide whether to emit (single match: confident; many matches: emit one edge per
+  // candidate at lower confidence; zero matches: drop).
+  fieldsByShortName: Map<string, StoredNode[]>;
 };
 
 function buildSymbolTable(nodes: StoredNode[]): SymbolTable {
@@ -34,6 +40,7 @@ function buildSymbolTable(nodes: StoredNode[]): SymbolTable {
   const methodByQName = new Map<string, StoredNode>();
   const methodsByClassAndName = new Map<string, StoredNode[]>();
   const nodeByLabelAndQName = new Map<string, StoredNode>();
+  const fieldsByShortName = new Map<string, StoredNode[]>();
 
   for (const node of nodes) {
     const key = `${node.label}::${node.qualifiedName}`;
@@ -53,10 +60,15 @@ function buildSymbolTable(nodes: StoredNode[]): SymbolTable {
         existing.push(node);
         methodsByClassAndName.set(mapKey, existing);
       }
+    } else if (node.label === NodeLabel.Field) {
+      const key = node.name.toLowerCase();
+      const arr = fieldsByShortName.get(key) ?? [];
+      arr.push(node);
+      fieldsByShortName.set(key, arr);
     }
   }
 
-  return { classByShortName, interfaceByShortName, methodByQName, methodsByClassAndName, nodeByLabelAndQName };
+  return { classByShortName, interfaceByShortName, methodByQName, methodsByClassAndName, nodeByLabelAndQName, fieldsByShortName };
 }
 
 function getArgCount(qname: string): number {
@@ -118,6 +130,42 @@ export function runPass2(
           return props !== undefined && props["isAuraEnabled"] === true;
         });
         toNode = auraEnabled ?? overloads[0];
+      }
+    }
+
+    // v0.8: short-name fallback for Field targets emitted by the Apex DML-write detector.
+    // The parser emits "__SHORTNAME__:FieldName" qnames because it doesn't know the
+    // receiver's SObject type. Strategy:
+    //   - If exactly one Field node has that short name → resolve confidently.
+    //   - If multiple candidates → disambiguate by which SObject the enclosing method has
+    //     SOQL_QUERIES or DML_ON edges to. Only emit an edge if exactly one candidate's
+    //     parent SObject matches the method's SOQL/DML context.
+    //   - If still ambiguous → drop. Over-claiming on every same-named field across the
+    //     org would tank precision (matrix has 4 SObjects with Status__c).
+    if (toNode === undefined && e.toLabel === NodeLabel.Field && e.toQName.startsWith("__SHORTNAME__:")) {
+      const shortName = e.toQName.slice("__SHORTNAME__:".length).toLowerCase();
+      const candidates = sym.fieldsByShortName.get(shortName) ?? [];
+      if (candidates.length === 1) {
+        toNode = candidates[0];
+      } else if (candidates.length > 1 && fromNode !== undefined) {
+        // Look up the SObjects the enclosing method touches via SOQL_QUERIES or DML_ON.
+        const methodSObjects = getMethodSObjectContext(store, projectId, fromNode.id);
+        const matching = candidates.filter((c) => {
+          const props = c.properties as Record<string, unknown> | undefined;
+          const parent = props?.["parentSObject"];
+          return typeof parent === "string" && methodSObjects.has(parent);
+        });
+        if (matching.length === 1) {
+          toNode = matching[0];
+        } else {
+          // Either no SObject context match or still ambiguous — drop (precision-first).
+          logger.debug(
+            { fromId: fromNode.id, shortName, candidates: candidates.length, matched: matching.length },
+            "pass2: DML-write field shortname unresolvable (precision-first drop)",
+          );
+          unresolvedCount++;
+          continue;
+        }
       }
     }
 
@@ -253,4 +301,63 @@ export function getNodeByLabelAndQName(
   qname: string,
 ): StoredNode | null {
   return getNodeByQName(store, projectId, label, qname);
+}
+
+// v0.8: return the set of SObject API names that this method has SOQL_QUERIES or DML_ON
+// edges to. Used to disambiguate DML-write field shortname resolution: if a method writes
+// `Status__c` and the field exists on 4 SObjects, the one matching the method's SOQL/DML
+// context is the intended target.
+//
+// Also includes the method's return type when it's an SObject (a helper like
+// `Inbound_Staging__c buildBase(...)` constructs the object but doesn't DML/SOQL it; the
+// return type is the strongest disambiguation signal we have without variable-type
+// inference).
+function getMethodSObjectContext(
+  store: GraphStore,
+  projectId: number,
+  methodId: number,
+): Set<string> {
+  type Row = { qualified_name: string };
+  const rows = store.db
+    .query<Row, [number, number]>(
+      `SELECT t.qualified_name AS qualified_name
+       FROM edges e
+       JOIN nodes t ON t.id = e.target_id
+       WHERE e.project_id = ? AND e.source_id = ?
+         AND t.label = 'SObject'
+         AND e.edge_type IN ('SOQL_QUERIES', 'DML_ON')`,
+    )
+    .all(projectId, methodId);
+  const sobjects = new Set(rows.map((r) => r.qualified_name));
+
+  // Pull the method's own properties.returnType — match against SObject node names.
+  type MethodRow = { properties: string };
+  const methodRow = store.db
+    .query<MethodRow, [number]>(
+      `SELECT properties FROM nodes WHERE id = ?`,
+    )
+    .get(methodId);
+  if (methodRow !== null) {
+    try {
+      const props = JSON.parse(methodRow.properties) as Record<string, unknown>;
+      const returnType = props["returnType"];
+      if (typeof returnType === "string" && returnType.endsWith("__c")) {
+        sobjects.add(returnType);
+      }
+      // Also include parameter types — `void setStatus(Inbound_Staging__c rec)`.
+      const params = props["parameters"];
+      if (Array.isArray(params)) {
+        for (const p of params) {
+          if (typeof p === "object" && p !== null && "type" in p) {
+            const t = (p as { type: unknown }).type;
+            if (typeof t === "string" && t.endsWith("__c")) sobjects.add(t);
+          }
+        }
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  return sobjects;
 }

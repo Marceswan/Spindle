@@ -44,6 +44,7 @@ export const EdgeType = {
   // Flow
   InvocableFromFlow: "INVOCABLE_FROM_FLOW",
   FlowUsesField: "FLOW_USES_FIELD",
+  FlowReferencesField: "FLOW_REFERENCES_FIELD", // Flow -> Field (per-field, authoritative)
   FlowDmlOn: "FLOW_DML_ON",
   FlowInvokesFlow: "FLOW_INVOKES_FLOW",
 
@@ -75,6 +76,30 @@ export const EdgeType = {
   VfUsesApex: "VF_USES_APEX",
   VfUsesField: "VF_USES_FIELD",
   VfIncludesComponent: "VF_INCLUDES_COMPONENT",
+
+  // uiBundle — modern React/TS apps under force-app/.../uiBundles/. Added v0.6.
+  // Intra-bundle edges (TsModule -> TsModule | Ts* | ReactComponent | ExternalNamespace).
+  TsImports: "TS_IMPORTS",
+  TsCalls: "TS_CALLS",
+  TsRenders: "TS_RENDERS",
+  TsExtends: "TS_EXTENDS",
+  // Cross-domain edges (uiBundle -> SFDX metadata; pass 2 resolves to existing nodes).
+  // The four LWC-compatible @salesforce/* import patterns. platform-sdk / agentforce / other
+  // @salesforce/* packages fall through to DependsOnExternal -> ExternalNamespace.
+  UiBundleUsesApex: "UI_BUNDLE_USES_APEX",
+  UiBundleUsesField: "UI_BUNDLE_USES_FIELD",
+  UiBundleUsesLabel: "UI_BUNDLE_USES_LABEL",
+  UiBundleUsesResource: "UI_BUNDLE_USES_RESOURCE",
+
+  // v0.7: type-level relationships and GraphQL.
+  TsImplements: "TS_IMPLEMENTS",          // class -> interface
+  TsTypeExtends: "TS_TYPE_EXTENDS",        // interface -> interface
+  TsTypeReferences: "TS_TYPE_REFERENCES",   // module/declaration -> ambient type
+  // GraphQL: cross-domain to existing SFDX nodes when types map (CRM GraphQL maps Object__c
+  // to a GraphQL type; field selections map to Field nodes).
+  GraphqlUsesField: "GRAPHQL_USES_FIELD",
+  GraphqlUsesType: "GRAPHQL_USES_TYPE",
+  GraphqlDefinedIn: "GRAPHQL_DEFINED_IN",  // GraphqlOperation -> TsModule (containment)
 } as const;
 
 export type EdgeType = (typeof EdgeType)[keyof typeof EdgeType];

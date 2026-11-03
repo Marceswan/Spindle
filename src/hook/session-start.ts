@@ -13,21 +13,14 @@
 //   - Diagnostic log at `<db-dir>/hook.log` is appended on EVERY invocation regardless
 //     of detection outcome — that's the user-visible proof the hook fired. `tail` it.
 
-import { spawn } from "node:child_process";
+import { ensureService, serviceRequest, type ServiceConnection } from "../service/client.ts";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { execPath } from "node:process";
 
-import { GraphStore } from "../graph/store.ts";
-import { indexProject } from "../pipeline/index-project.ts";
-import { getDefaultDbDir, getDefaultDbPath } from "../util/db-path.ts";
+import { getDefaultDbDir } from "../util/db-path.ts";
 import { logger } from "../util/logger.ts";
-import {
-  getPidFilePath,
-  isPidAlive,
-  readPidFile,
-} from "./watch-control.ts";
+
 
 const SFDX_SOURCE_EXTENSIONS = new Set([".cls", ".trigger", ".cmp", ".app", ".page", ".vfp"]);
 const SHALLOW_PROBE_MAX_DEPTH = 4;
@@ -42,6 +35,7 @@ export type HookOptions = {
   source?: string | undefined;
   /** Skip the stdin read (used by tests). */
   skipStdin?: boolean;
+  service?: ServiceConnection;
 };
 
 export type HookResult =
@@ -69,13 +63,13 @@ export async function runSessionStartHook(opts: HookOptions = {}): Promise<HookR
   const cwd = resolve(cwdRaw);
   const source = opts.source ?? stdin?.source ?? "unknown";
 
-  const result = await runInner(cwd, source);
+  const result = await runInner(cwd, source, opts.service);
   writeDiagnosticLog({ cwd, source, result });
   emitHookOutput(result);
   return result;
 }
 
-async function runInner(cwd: string, _source: string): Promise<HookResult> {
+async function runInner(cwd: string, _source: string, connection?: ServiceConnection): Promise<HookResult> {
   const detection = await detectSfdxProject(cwd);
   if (!detection.isSfdx) {
     logger.debug({ cwd }, "session-start-hook: not an SFDX project");
@@ -83,31 +77,14 @@ async function runInner(cwd: string, _source: string): Promise<HookResult> {
   }
 
   const projectRoot = detection.projectRoot;
-  const dbPath = getDefaultDbPath();
-  await mkdir(dirname(dbPath), { recursive: true });
-
-  const store = new GraphStore(dbPath);
-  let indexResult;
   try {
-    indexResult = await indexProject(projectRoot, store, { mode: "incremental" });
-  } catch (err) {
-    logger.warn({ err, projectRoot }, "session-start-hook: index failed, skipping");
-    return { status: "skipped", reason: `index-failed: ${(err as Error).message}` };
-  } finally {
-    store.close();
+    const service=connection ?? await ensureService();
+    const indexed=await serviceRequest<{files_parsed:number;nodes_written:number;edges_written:number;duration_ms:number}>(service,"/service/call",{name:"index_project",arguments:{project_root:projectRoot}});
+    return {status:"indexed",projectRoot,filesParsed:indexed.files_parsed,nodesWritten:indexed.nodes_written,edgesWritten:indexed.edges_written,durationMs:indexed.duration_ms,watcherPid:service.pid};
+  } catch(err) {
+    logger.warn({err,projectRoot},"session-start-hook: index failed, skipping");
+    return {status:"skipped",reason:`index-failed: ${(err as Error).message}`};
   }
-
-  const watcherPid = ensureWatchDaemon(projectRoot);
-
-  return {
-    status: "indexed",
-    projectRoot,
-    filesParsed: indexResult.filesParsed,
-    nodesWritten: indexResult.nodesWritten,
-    edgesWritten: indexResult.edgesWritten,
-    durationMs: indexResult.durationMs,
-    watcherPid,
-  };
 }
 
 /**
@@ -212,33 +189,6 @@ async function readStdinJson(): Promise<StdinPayload | null> {
       finish(null);
     });
   });
-}
-
-function ensureWatchDaemon(projectRoot: string): number | null {
-  const pidFile = getPidFilePath(projectRoot);
-  const existing = readPidFile(pidFile);
-  if (existing && isPidAlive(existing.pid)) {
-    return existing.pid;
-  }
-
-  const self = execPath;
-  if (!self) {
-    logger.warn("session-start-hook: cannot resolve own binary path to spawn watcher");
-    return null;
-  }
-
-  try {
-    const child = spawn(self, ["watch-daemon", projectRoot], {
-      detached: true,
-      stdio: "ignore",
-      env: process.env,
-    });
-    child.unref();
-    return child.pid ?? null;
-  } catch (err) {
-    logger.warn({ err, projectRoot }, "session-start-hook: failed to spawn watch daemon");
-    return null;
-  }
 }
 
 type Detection = { isSfdx: true; projectRoot: string } | { isSfdx: false };

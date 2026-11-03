@@ -8,6 +8,49 @@ follow SemVer once a v1.0 binary ships.
 
 ---
 
+## [Unreleased] — Review remediation and shared service
+
+- Restore reproducible source, manifests, lockfiles and compiled UI assets.
+- Run one authenticated loopback service for all clients/projects, with atomic socket ownership, crash recovery, shared watchers, stdio adapters and native HTTP MCP.
+- Rebuild changed project inventories transactionally; fix stale edges, deletions, search limits, Cypher literal/operator/count behavior and cross-project neighborhood leaks.
+- Extract SOQL fields from actual Apex parse contexts; complete Flow RHS/output references, preserve field-usage contexts, filter denied permission entries and scan Aura helpers.
+- Ignore stale Workbench responses, reset project-owned state and display request errors. Minimize persisted metric parameters.
+- Keep planned Explore filters/expansion, savings timeline and method picker as follow-up UI work. Package version remains 1.1.2; no release was published.
+
+The version headings below record development milestones; they are not evidence that corresponding binary releases were published.
+
+## [v1.7.0] — Field-resolution precision (advanced Flow + clause-aware SOQL)
+
+Design-doc phase v1.2.
+
+### Added
+
+- **Advanced Flow extraction.** The Flow parser now emits per-field `FLOW_REFERENCES_FIELD` edges from record elements (queriedFields / sortField / filters / inputAssignments), record-triggered entry criteria, `assignments`, `decisions`, and `formulas` resources. An intra-parser variable->SObject binding table resolves `myVar.Field__c` references to `Object__c.Field__c` (tier 1); unbound roots fall back to a `__SHORTNAME__:` qname that pass2 places or drops. `get_field_usage`'s `flows` bucket is promoted from `indirect` to `authoritative`; the coarse `FLOW_DML_ON` edge is retained as the `include_indirect` fallback.
+- **Clause-aware SOQL field extraction** (`src/parsers/apex/soql/extract.ts`). Field references in `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING`, and child subqueries — not just `SELECT` — now become `REFERENCES_FIELD` edges, each tagged with `properties.context` (`SOQL_SELECT|SOQL_WHERE|SOQL_ORDERBY|SOQL_GROUPBY|SOQL_HAVING|SOQL_SUBQUERY`). Production uses the original SOQL parse context and preserves token/literal boundaries. No new edge type; the coarse `SOQL_QUERIES` edge is retained so recall never regresses.
+
+### Deferred
+
+- Full recursive-descent SOQL AST and pass2 relationship-path terminal resolution (`Account__r.Name` -> `Account__c.Name`); relationship paths and subquery fields currently resolve to their leaf short-name (tier 2). See `docs/superpowers/specs/2026-05-29-spindle-full-soql-parser-design.md`.
+
+---
+
+## [v1.6.0] — Workbench UI
+
+Design-doc phase v1.1. (SemVer jumps to 1.6.0 because 1.3.0-1.5.0 already shipped phases v0.6 through v0.9; see `sfdx-graph-mcp-design.md` §14 for the phase-to-SemVer mapping.)
+
+### Added
+
+- **`spindle ui` subcommand.** Launches a local web Workbench: a loopback HTTP server (`Bun.serve` bound to `127.0.0.1`, OS-picked port unless `--port`) that serves an embedded React + cytoscape.js single-page app. The URL is printed to **stderr** (stdout stays reserved for the MCP transport) and the browser opens automatically unless `--no-open`. One process, separate from the stdio MCP server; no outbound network — inbound loopback only, started explicitly by the user. Flags: `[project-path] [--port N] [--no-open] [--db-path P]`.
+- **Four Workbench tabs.** Overview (token-savings KPIs + per-tool bars + corpus counts), Explore (force-directed neighborhood graph with filter + node cap), Field Impact (`get_field_usage` by surface), Permissions (`get_permission_access` chains). The web tier (`src/web/api.ts`) reuses `graph/queries.ts` and the existing MCP tool handlers directly — no query logic is duplicated.
+- **Live token-savings instrumentation.** Every MCP tool call is recorded into a new `tool_invocation` table (schema v2): tool name, params (API names only, never code contents), duration, result tokens, an estimated grep+read baseline, and tokens saved. The estimator (`src/metrics/estimate-savings.ts`, pure) is hybrid — result-aware when the result references files (baseline from those files' bytes), multiplier fallback otherwise (`src/metrics/baseline-multipliers.ts`). All figures are labeled "estimated" in the UI. Recording is local-only and never throws into a tool response.
+- **`SFDX_GRAPH_NO_METRICS=1` opt-out** disables tool-invocation recording.
+
+### Build
+
+- **`bun run build:web`** builds the SPA and regenerates `src/web/embedded-assets.ts`; the top-level `bun run build` runs it before `bun build --compile`, so every release binary embeds the SPA. The committed `embedded-assets.ts` is a small stub (empty map → dev disk fallback); the real map is build-generated. CI and release both run `build:web`.
+
+---
+
 ## [v1.1.2] — patch
 
 ### Fixed

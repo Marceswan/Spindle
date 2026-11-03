@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { EdgeType } from "../../src/model/edge-types.ts";
 import { NodeLabel } from "../../src/model/node-labels.ts";
 import { GraphStore } from "../../src/graph/store.ts";
+import { CURRENT_SCHEMA_VERSION } from "../../src/graph/schema.ts";
 
 function freshStore(): { store: GraphStore; cleanup: () => void } {
   const dbPath = join(tmpdir(), `spindle-test-${Date.now()}-${Math.random()}.db`);
@@ -32,7 +33,7 @@ describe("GraphStore", () => {
       const version = store.db
         .query<{ version: number }, []>("SELECT version FROM schema_version")
         .get();
-      expect(version?.version).toBe(1);
+      expect(version?.version).toBe(CURRENT_SCHEMA_VERSION);
     } finally {
       cleanup();
     }

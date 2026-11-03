@@ -17,6 +17,7 @@
 //   path variables, pattern comprehensions.
 
 import type { GraphStore } from "../graph/store.ts";
+import {tokenize, TokenKind} from "../graph/cypher/tokenizer.ts";
 import { parseCypher } from "../graph/cypher/parser.ts";
 import { planQuery } from "../graph/cypher/planner.ts";
 import { executeQuery } from "../graph/cypher/executor.ts";
@@ -124,9 +125,13 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     return out;
   }
 
+  // Only inspect syntax tokens: quoted values are data, not clauses.
+  let syntax: string;
+  try { syntax = tokenize(query).map(t => t.kind === TokenKind.StringLit ? "''" : t.text).join(" "); }
+  catch(error) { return {error: `Parse error: ${(error as Error).message}. Only read-only MATCH queries are supported.`, suggestion: "Use supported Cypher syntax."}; }
   // Pre-flight: check for unsupported constructs.
   for (const { pattern, message, suggestion } of UNSUPPORTED_PATTERNS) {
-    if (pattern.test(query)) {
+    if (pattern.test(syntax)) {
       const out: ErrorOutput = { error: message, suggestion };
       return out;
     }

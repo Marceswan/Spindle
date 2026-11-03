@@ -87,8 +87,10 @@ describe("get_field_usage tool", () => {
     expect(result.coverage.authoritative).toContain("lwc_bundles");
     expect(result.coverage.authoritative).toContain("vf_pages");
     expect(result.coverage.authoritative).toContain("validation_rules");
-    // flows graduated from "pending" to "indirect" once the Flow parser landed.
-    expect(result.coverage.indirect).toContain("flows");
+    // flows: pending (v0.3) -> indirect (Flow parser) -> authoritative (advanced Flow
+    // extraction emits per-field FLOW_REFERENCES_FIELD edges).
+    expect(result.coverage.authoritative).toContain("flows");
+    expect(result.coverage.indirect).toContain("flows"); // coarse fallback remains available
     expect(result.coverage.pending).toContain("aura_components");
   });
 

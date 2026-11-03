@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>62.0</apiVersion>
+    <interviewLabel>Customer Field Refs</interviewLabel>
+    <label>Customer Field Refs</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+    <variables>
+        <name>myCust</name>
+        <dataType>SObject</dataType>
+        <objectType>Customer__c</objectType>
+        <isCollection>false</isCollection>
+        <isInput>true</isInput>
+    </variables>
+    <recordLookups>
+        <name>load_customer</name>
+        <object>Customer__c</object>
+        <queriedFields>Email__c</queriedFields>
+        <queriedFields>Tier__c</queriedFields>
+        <sortField>Email__c</sortField>
+        <filters>
+            <field>Tier__c</field>
+            <operator>EqualTo</operator>
+        </filters>
+    </recordLookups>
+    <recordUpdates>
+        <name>update_customer</name>
+        <object>Customer__c</object>
+        <inputAssignments>
+            <field>Email__c</field>
+        </inputAssignments>
+    </recordUpdates>
+    <decisions>
+        <name>check_tier</name>
+        <rules>
+            <name>is_gold</name>
+            <conditions>
+                <leftValueReference>myCust.Tier__c</leftValueReference>
+                <operator>EqualTo</operator>
+            </conditions>
+        </rules>
+    </decisions>
+    <assignments>
+        <name>set_email</name>
+        <assignmentItems>
+            <assignToReference>myCust.Email__c</assignToReference>
+            <operator>Assign</operator>
+        </assignmentItems>
+    </assignments>
+    <formulas>
+        <name>email_upper</name>
+        <dataType>String</dataType>
+        <expression>UPPER({!myCust.Email__c})</expression>
+    </formulas>
+</Flow>

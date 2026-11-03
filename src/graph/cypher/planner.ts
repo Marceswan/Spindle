@@ -120,18 +120,19 @@ function predicateToSql(
     }
     case "contains": {
       const expr = resolveAccess(pred.left, variableAliases);
-      params.push(`%${pred.right.value}%`);
-      return `${expr} LIKE ?`;
+      params.push(pred.right.value);
+      return `instr(${expr}, ?) > 0`;
     }
     case "startsWith": {
       const expr = resolveAccess(pred.left, variableAliases);
-      params.push(`${pred.right.value}%`);
-      return `${expr} LIKE ?`;
+      params.push(pred.right.value, pred.right.value);
+      return `substr(${expr}, 1, length(?)) = ?`;
     }
     case "endsWith": {
       const expr = resolveAccess(pred.left, variableAliases);
-      params.push(`%${pred.right.value}`);
-      return `${expr} LIKE ?`;
+      if (pred.right.value === "") return `${expr} IS NOT NULL`;
+      params.push(pred.right.value, pred.right.value);
+      return `substr(${expr}, -length(?)) = ?`;
     }
     case "in": {
       const expr = resolveAccess(pred.left, variableAliases);
@@ -302,7 +303,7 @@ function planNodeOnly(
     sql += ` ORDER BY ${buildOrderByExpr(query.orderBy, variableAliases)}`;
   }
 
-  if (!isCount) {
+  {
     if (query.skip !== undefined) {
       if (query.limit !== undefined) {
         sql += ` LIMIT ${query.limit} OFFSET ${query.skip}`;
@@ -403,7 +404,7 @@ function planRelationship(
     sql += ` ORDER BY ${buildOrderByExpr(query.orderBy, variableAliases)}`;
   }
 
-  if (!isCount) {
+  {
     if (query.skip !== undefined) {
       if (query.limit !== undefined) {
         sql += ` LIMIT ${query.limit} OFFSET ${query.skip}`;
@@ -430,6 +431,9 @@ function planRelationship(
 }
 
 export function planQuery(query: CypherQuery): SqlPlan {
+  if (query.returnItems.some((r) => r.kind === "count") && !query.returnItems.every((r) => r.kind === "count")) {
+    throw new Error("Mixed aggregate and scalar projections are not supported; query them separately.");
+  }
   const match = query.match;
   if (match.kind === "nodeOnly") {
     return planNodeOnly(match, query);

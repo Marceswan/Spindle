@@ -6,8 +6,8 @@ Spindle replaces grep-and-read loops with single-call graph queries for Salesfor
 
 | | |
 |---|---|
-| **Status** | v0.5 + v1.0 distribution — 101 tests passing, 9 MCP tools live, GitHub Actions matrix release wired up |
-| **Headline** | On a 100-class synthetic corpus, returns answers in ~25% of the tokens a grep+read flow would use, ~160x faster |
+| **Status** | v1.1.2 package; unreleased remediation adds one shared service, 9 MCP tools and Workbench UI (`sfdx-graph-mcp ui`) |
+| **Headline** | Returns answers in ~24% of the tokens a grep+read flow would use on a 100-class corpus, dropping to ~2.4% on a 1000-class corpus — token efficiency scales with project size — and 180x+ faster |
 | **Distribution** | Single Bun-compiled binary per platform via GitHub Releases. Cross-compile to darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64 validated. Matrix build wired into `.github/workflows/release.yml`. |
 | **License** | MIT |
 
@@ -56,7 +56,8 @@ Env vars to control behavior:
 git clone https://github.com/Kelley-Austin/Spindle.git
 cd Spindle
 bun install
-bun test                  # 85 tests
+cd web && bun install --frozen-lockfile && cd ..
+bun test --timeout 30000
 bun run typecheck         # tsc --noEmit
 bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 ```
@@ -67,15 +68,20 @@ bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 sfdx-graph-mcp index /path/to/your/sfdx-project --full
 ```
 
-This writes `<project>/.sfdx-graph/graph.db`. Add it to your project's `.gitignore`.
+This starts or connects to the shared background service and writes `~/.cache/sfdx-graph-mcp/graph.db`. All projects and clients use that service. `SFDX_GRAPH_HOME` or `--db-path` selects the database when the service first starts; an explicit conflicting database is rejected while it is running.
 
-To run a continuously-updated graph during active development, add `--watch`:
+Indexing automatically registers one watcher per canonical project root. Changes are debounced and serialized. Unchanged inventories are skipped; any addition, edit or deletion atomically rebuilds that project's graph so references remain correct. Changed-project indexing therefore scales with project size.
 
 ```bash
-sfdx-graph-mcp index /path/to/your/sfdx-project --watch
+sfdx-graph-mcp service-status       # shared PID, database and watched projects
+sfdx-graph-mcp ui --no-open         # print the authenticated local Workbench URL
+sfdx-graph-mcp stop-watch --cwd /path/to/project
+sfdx-graph-mcp service-stop         # stop the service and all watchers
 ```
 
-Spindle does an initial index, then attaches a `chokidar` watcher. File changes are debounced 300ms and trigger an incremental reindex (typically 20-50ms per changed file). Ctrl+C shuts down cleanly.
+The service owns `127.0.0.1:47839` before opening SQLite. Simultaneous launches converge on that owner; no fallback port is used. A conflicting service from another OS user or application causes startup to fail. The discovery file is `~/.cache/sfdx-graph-mcp/service.json` (mode 0600), independent of the selected database. After a crash, the next client starts a replacement; stored projects are watched and checked again. Explicitly stopped watchers remain stopped until another index or service restart.
+
+Stdio MCP launchers are lightweight adapters; each client may have an adapter process, but only one background service owns the database, indexing and watchers. Native MCP HTTP clients can connect to `/mcp` on the service with the discovery record's bearer token. Session end leaves the shared service running for other clients. Run `register-hook` after upgrading to replace legacy SessionEnd `stop-watch` hooks. Stop legacy per-project daemons before upgrading; the new service never kills a PID merely because it appears in a stale PID file.
 
 ### Configure as an MCP server in Claude Code
 
@@ -166,16 +172,17 @@ graph LR
     P4 --> DB[(SQLite Graph<br/>nodes + edges + file_hashes + file_backrefs)]
 
     DB --> Tools[9 MCP Tools]
-    Tools --> MCP[MCP stdio Server]
+    Tools --> Service[Single shared service]
+    Service --> MCP[Stdio adapters or HTTP MCP]
     MCP --> Claude[Claude Code / any MCP client]
 ```
 
 ### Pipeline passes
 
-1. **Pass 1 — discovery + structural.** For each discovered file: if content hash matches stored hash, skip. Otherwise dispatch to the right parser (`parse-dispatch.ts`), then in a single SQLite transaction delete stale nodes and insert fresh ones.
+1. **Pass 1 — discovery + structural.** Compare the entire path/hash inventory. If unchanged, skip the project. Otherwise prepare parser results, then rebuild its nodes and all resolution passes in one transaction. A failed write rolls back to the last published graph.
 2. **Pass 2 — intra-domain edges.** Build a symbol table from all nodes; resolve EXTENDS / IMPLEMENTS / INSTANTIATES / CALLS by short-name lookup against the project's own symbols. Write in-file edges (DEFINES_METHOD, SOQL_QUERIES, REFERENCES_FIELD, etc.) and apply a fallback resolver when target qnames are unparameterized (e.g., LWC `@salesforce/apex` imports point at `AccountService.cleanup` not `AccountService.cleanup()`).
 3. **Pass 3 — cross-domain.** Currently a stub; future home for richer multi-domain resolution.
-4. **Pass 4 — reverse index.** Populates `file_backrefs` so incremental reindex knows which files to re-resolve when a dependency changes.
+4. **Pass 4 — reverse index.** Regenerates `file_backrefs`; conservative rebuilds currently resolve every file after a change.
 
 ---
 
@@ -183,7 +190,7 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph Done[" ✅ Shipped in v0.1 → v0.5 + v1.0 distribution "]
+    subgraph Done[" ✅ Shipped (v0.1 → v0.9, v1.0 distribution, v1.1 Workbench) "]
         Apex2[Apex parser<br/>classes, triggers, methods,<br/>extends/implements, SOQL]
         Meta2[Object metadata + CustomLabel<br/>SObject, Field, ValidationRule, RecordType, CustomLabel]
         LWC2[LWC parser<br/>via @lwc/metadata]
@@ -195,21 +202,24 @@ graph TB
         StaticEmail4[StaticResource + EmailTemplate<br/>parsers]
         Watch4[chokidar watch mode<br/>incremental reindex on file change]
         Cypher5[Cypher query layer<br/>+ query_graph tool]
+        UiBundle67[uiBundle indexing<br/>React/TS + GraphQL + TS-compiler enrichment]
+        FieldWrite89[DML + constructor-arg field-write indexing<br/>+ call-graph propagation]
+        Workbench11[Workbench UI<br/>spindle ui + token-savings instrumentation]
         Tools2[9 MCP tools]
         Bench2[Bench Phase A + B<br/>synthetic corpus + grep baseline]
         Dist1[Cross-platform binaries<br/>+ install.sh / install.ps1<br/>+ GitHub Actions matrix release]
     end
 
-    subgraph Soon[" 🚧 v0.6 + v1.1 polish "]
+    subgraph Soon[" 🚧 Next "]
         FlowAdv4[Flow assignments / decisions / formulas<br/>variable-to-SObject binding]
         OptCypher[OPTIONAL MATCH + WITH chaining<br/>+ aggregates beyond count]
         SOQL4[Full SOQL parser<br/>replaces regex]
     end
 
-    subgraph Later[" 📋 v1.2+ "]
+    subgraph Later[" 📋 Later "]
         SelfUpdate[Self-update command<br/>+ GPG-signed checksums]
-        WebUI[Read-only Web UI<br/>for offline exploration]
         Diff[Multi-org diff mode]
+        VSCode[VS Code companion extension<br/>+ Apex test-coverage overlay]
     end
 
     Done --> Soon --> Later
@@ -219,20 +229,22 @@ graph TB
 
 ## Bench headline
 
-A 100-class synthetic corpus (907 nodes, 967 edges, indexed in 1.3 seconds) against the 8 canonical queries:
+A 100-class synthetic corpus (907 nodes, indexed in 0.5s) against the 8 canonical queries:
 
 ```
 | Query                                | Spindle (tokens / ms) | Grep+Read (tokens / ms) | Token ratio | Speedup |
 |--------------------------------------|------------------------|--------------------------|-------------|---------|
-| trace-outbound-from-orchestrator-run | 6 / 0.34              | 0 / 75.57                | N/A         | 219x    |
-| get-schema-summary                   | 144 / 1.06            | 845 / 2.19               | 17.0%       | 2.1x    |
-| search-all-apex-classes              | 6248 / 0.46           | 19040 / 77.73            | 32.8%       | 170x    |
-| search-apex-trigger                  | 216 / 0.25            | 0 / 96.51                | N/A         | 392x    |
+| trace-outbound-from-orchestrator-run | 6 / 0.11              | 0 / 13.26                | N/A         | 117x    |
+| get-schema-summary                   | 144 / 0.43            | 845 / 1.29               | 17.0%       | 3.0x    |
+| search-all-apex-classes              | 5848 / 0.20           | 19040 / 13.91            | 30.7%       | 68.5x   |
+| search-apex-trigger                  | 200 / 0.10            | 0 / 12.91                | N/A         | 130x    |
 ```
 
-Across queries with non-zero grep tokens: **Spindle uses 24.9% of grep's tokens on average and is 148x faster.** N/A ratios are queries whose hand-fixture-derived grep patterns happen to match zero bytes in the synthetic corpus — see `bench/README.md` for the methodology.
+Across queries with non-zero grep tokens: **Spindle uses 23.9% of grep's tokens on average** (range 17.0%-30.7%), and is ~67x faster.
 
-Run `bun run bench --compare --size 1000` for a 1000-class corpus.
+The token gap widens with project size. On a **1000-class corpus** (9,071 nodes, indexed in 8.5s), Spindle uses just **2.4% of grep's tokens** on average (range 1.7%-3.0%) and is ~182x faster — the bigger and more interconnected the org, the more grep+read over-reads and the more Spindle saves.
+
+N/A ratios are queries whose hand-fixture-derived grep patterns happen to match zero bytes in the synthetic corpus — see `bench/README.md` for the methodology. Speedup is wall-clock and varies with disk/CPU load; the token ratio is the stable signal. Reproduce with `bun run bench --compare --size 100` (or `--size 1000`).
 
 ---
 
@@ -241,7 +253,8 @@ Run `bun run bench --compare --size 1000` for a 1000-class corpus.
 ```bash
 bun install
 bun run typecheck     # tsc --noEmit, strict + exactOptionalPropertyTypes
-bun test              # bun:test, parallel by file
+cd web && bun install --frozen-lockfile && cd ..
+bun test --timeout 30000 # includes local-service and UI regressions
 bun run bench         # Phase A against the sample fixture
 ```
 
@@ -251,18 +264,50 @@ Conventions live in `CLAUDE.md`. Gotchas live in `learnings.md` (read it before 
 
 ## Roadmap
 
-v1.0 ships a single self-contained Bun-compiled binary per platform via GitHub Releases. Current phase progress:
+### Two version schemes
+
+Spindle tracks progress two ways, and they are not the same numbers:
+
+- **Design-doc feature phases** (`v0.1` ... `v0.9`, `v1.1`) — feature milestones in `sfdx-graph-mcp-design.md` §14. These describe *what got built*.
+- **Released binary SemVer** (git tags `v1.0.0`..`v1.1.2`, `package.json` `version`) — versions of the distributable binary. These describe *what got shipped to users*.
+
+A single SemVer release can bundle several design-doc phases. The mapping:
+
+| SemVer release | Design-doc phase(s) |
+|----------------|---------------------|
+| `1.0.x`        | v1.0 distribution (cross-platform matrix build, installers, LICENSE/SECURITY/CONTRIBUTING) |
+| `1.1.x`        | SessionStart hook |
+| `1.3.0`        | v0.6 (uiBundle indexing) + v0.7 (member calls / `.d.ts` / GraphQL / TS-compiler enrichment) |
+| `1.4.0`        | v0.8 (DML field-write indexing + call-graph propagation) |
+| `1.5.0`        | v0.9 (constructor-arg field-write detection) |
+| `1.6.0`        | v1.1 Workbench UI (`spindle ui`) — unreleased on this branch |
+
+### Phase progress
 
 - ✅ **v0.1** — Apex-only graph
 - ✅ **v0.2** — Object metadata + LWC + Aura + VF + `get_field_usage`
 - ✅ **v0.3** — CustomLabel + Permission graph + FlexiPage + Layout + Flow + `get_permission_access`
 - ✅ **v0.4** — StaticResource + EmailTemplate + chokidar watch mode + Bun-compiled binary validated
 - ✅ **v0.5** — Cypher query layer + `query_graph` MCP tool
-- ✅ **v1.0 distribution** — Cross-platform matrix release wired up; install scripts; LICENSE/SECURITY/CONTRIBUTING (current snapshot — tag a `v*.*.*` release to publish binaries)
-- ⏭️ **v0.6 / v1.1** — Advanced Flow extraction (variables, decisions, formulas); OPTIONAL MATCH + WITH chaining in Cypher; full SOQL parser replacing the regex
-- ⏭️ **v1.2+** — Self-update + GPG-signed checksums; read-only web UI; multi-org diff mode
+- ✅ **v1.0 distribution** — Cross-platform matrix release; install scripts; LICENSE/SECURITY/CONTRIBUTING (tag a `v*.*.*` release to publish binaries)
+- ✅ **v0.6** — uiBundle indexing (React/TS apps under `uiBundles/*/src/`)
+- ✅ **v0.7** — Member-expression calls + `.d.ts` indexing + GraphQL operation extraction + TypeScript Compiler API enrichment
+- ✅ **v0.8** — DML field-write indexing + call-graph propagation in `get_field_usage`
+- ✅ **v0.9** — Constructor-arg field-write detection
+- ✅ **v1.1 Workbench UI** — `spindle ui` local web UI (Overview / Explore / Field Impact / Permissions) + live token-savings instrumentation (see design doc §19)
 
-See `sfdx-graph-mcp-design.md` §14 for the original roadmap.
+### Pending
+
+- ✅ Advanced Flow extraction — per-field `FLOW_REFERENCES_FIELD` edges (record elements, assignments, decisions, formulas); Flow is now an authoritative field-impact surface
+- ✅ Clause-aware SOQL field extraction — WHERE / ORDER BY / GROUP BY / HAVING / subquery fields become `REFERENCES_FIELD` edges, not just SELECT (full recursive-descent AST + relationship-path terminal resolution deferred)
+- ⏭️ Cypher gaps: OPTIONAL MATCH, WITH chaining, aggregates beyond `count()`, UNWIND, write ops
+- ⏭️ Self-update command with GPG-signed checksums
+- ⏭️ Multi-org diff mode
+- ⏭️ VS Code companion extension; Apex test-coverage overlay; Translation Workbench integration
+- ⏭️ Stubbed `reset` and `doctor` CLI subcommands
+- ⏭️ Per-variable type tracking; standard-object field writes; dynamic SObject construction (`newSObject().put` / `sObj.put('Field__c', val)`)
+
+See `sfdx-graph-mcp-design.md` §14 for the full roadmap.
 
 ---
 
@@ -271,3 +316,9 @@ See `sfdx-graph-mcp-design.md` §14 for the original roadmap.
 MIT. The full source is in this repository; the v1.0 binaries will be reproducible from source.
 
 There is no paid tier and no commercial license. GitHub Sponsors is the only optional support channel. Sponsorship buys nothing material; it expresses support. This keeps the project unencumbered by commercial obligations and focused on technical correctness.
+
+## Current Workbench scope
+
+The four tabs provide savings totals/by-tool estimates, graph search/neighborhoods, field-impact reports and metadata permission grants. Explore label/edge filters and “show more,” a savings timeline, and a method-to-class permission picker remain follow-up UI work. Select the declaring Apex class for class-access metadata today; this is not a user effective-access evaluator. The original UI design describes those intended controls, not all currently implemented behavior.
+
+Metrics persist counters and allowlisted identifiers, never new freeform query/source payloads. Historical rows are not rewritten by this change. See [remediation validation](docs/reviews/2026-11-03-remediation-results.md) for test evidence and limits.

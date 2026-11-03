@@ -136,6 +136,7 @@ export function tokenize(input: string): Token[] {
           value += advance();
         }
       }
+      if (pos >= input.length) throw new Error(`Unterminated string at column ${startCol}`);
       advance(); // closing quote
       tokens.push({ kind: TokenKind.StringLit, text: value, column: startCol });
       continue;
@@ -199,8 +200,7 @@ export function tokenize(input: string): Token[] {
       continue;
     }
 
-    // Unknown character: skip with no error (best-effort)
-    advance();
+    throw new Error(`Unsupported character ${JSON.stringify(ch)} at column ${startCol}`);
   }
 
   // Post-process: collapse multi-word keywords in sequence.
@@ -214,40 +214,44 @@ export function tokenize(input: string): Token[] {
     const t = tokens[i]!;
     const next = tokens[i + 1];
 
-    if (t.kind === TokenKind.KwOrderBy && next !== undefined && next.text.toUpperCase() === "BY") {
+    if (t.kind === TokenKind.KwOrderBy && next !== undefined && next.kind !== TokenKind.StringLit && next.text.toUpperCase() === "BY") {
       // ORDER + BY -> single ORDER_BY token
       merged.push({ kind: TokenKind.KwOrderBy, text: "ORDER BY", column: t.column });
       i += 2;
       continue;
     }
 
-    if (t.kind === TokenKind.KwStartsWith && next !== undefined && next.text.toUpperCase() === "WITH") {
+    if (t.kind === TokenKind.KwStartsWith && next !== undefined && next.kind !== TokenKind.StringLit && next.text.toUpperCase() === "WITH") {
       merged.push({ kind: TokenKind.KwStartsWith, text: "STARTS WITH", column: t.column });
       i += 2;
       continue;
     }
 
-    if (t.kind === TokenKind.KwEndsWith && next !== undefined && next.text.toUpperCase() === "WITH") {
+    if (t.kind === TokenKind.KwEndsWith && next !== undefined && next.kind !== TokenKind.StringLit && next.text.toUpperCase() === "WITH") {
       merged.push({ kind: TokenKind.KwEndsWith, text: "ENDS WITH", column: t.column });
       i += 2;
       continue;
     }
 
-    if (t.kind === TokenKind.KwOptionalMatch && next !== undefined && next.text.toUpperCase() === "MATCH") {
+    if (t.kind === TokenKind.KwOptionalMatch && next !== undefined && next.kind !== TokenKind.StringLit && next.text.toUpperCase() === "MATCH") {
       merged.push({ kind: TokenKind.KwOptionalMatch, text: "OPTIONAL MATCH", column: t.column });
       i += 2;
       continue;
     }
 
+    if ([TokenKind.KwOrderBy, TokenKind.KwStartsWith, TokenKind.KwEndsWith, TokenKind.KwOptionalMatch].includes(t.kind) && t.text.toUpperCase() !== "BY") {
+      throw new Error(`Incomplete keyword ${t.text} at column ${t.column}`);
+    }
+
     // Standalone BY is not a real keyword; treat as identifier if it appears alone
-    if (t.text.toUpperCase() === "BY") {
+    if (t.kind !== TokenKind.StringLit && t.text.toUpperCase() === "BY") {
       merged.push({ kind: TokenKind.Ident, text: t.text, column: t.column });
       i++;
       continue;
     }
 
     // Standalone WITH is not a real keyword; treat as identifier if it appears alone
-    if (t.text.toUpperCase() === "WITH") {
+    if (t.kind !== TokenKind.StringLit && t.text.toUpperCase() === "WITH") {
       merged.push({ kind: TokenKind.Ident, text: t.text, column: t.column });
       i++;
       continue;

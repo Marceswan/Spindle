@@ -6,7 +6,7 @@
 // schema.sql at the same path mirrors this string verbatim for sql-shell convenience
 // (it's the human-readable canonical) but is NOT loaded at runtime.
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export const SCHEMA_DDL = `
 PRAGMA journal_mode = WAL;
@@ -86,4 +86,21 @@ CREATE INDEX IF NOT EXISTS idx_backrefs_target ON file_backrefs(target_file);
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
+
+-- v1.1 Workbench: per-tool-call savings instrumentation. params_json holds API
+-- names/identifiers only, never code contents.
+CREATE TABLE IF NOT EXISTS tool_invocation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    tool_name TEXT NOT NULL,
+    params_json TEXT,
+    duration_ms INTEGER,
+    result_tokens INTEGER,
+    baseline_tokens INTEGER,
+    tokens_saved INTEGER,
+    method TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_project ON tool_invocation(project_id);
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_created ON tool_invocation(created_at);
 `;

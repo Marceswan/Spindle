@@ -47,6 +47,21 @@ export const NodeLabel = {
   // Visualforce — promoted from v1.1 to v0.2 per scope decision.
   VisualforcePage: "VisualforcePage",
   VisualforceComponent: "VisualforceComponent",
+
+  // uiBundle (modern React/TS apps under force-app/.../uiBundles/<name>/src/). Added v0.6.
+  // A file may be a ReactComponent OR a TsFunction, never both — the parser picks based on
+  // whether the function returns JSX. Same for class/component.
+  UiBundle: "UiBundle",
+  TsModule: "TsModule",
+  TsFunction: "TsFunction",
+  TsClass: "TsClass",
+  ReactComponent: "ReactComponent",
+
+  // v0.7: TypeScript type-level constructs and GraphQL operations.
+  TsInterface: "TsInterface",
+  TsTypeAlias: "TsTypeAlias",
+  GraphqlOperation: "GraphqlOperation",
+  GraphqlFragment: "GraphqlFragment",
 } as const;
 
 export type NodeLabel = (typeof NodeLabel)[keyof typeof NodeLabel];

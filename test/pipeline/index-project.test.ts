@@ -246,7 +246,7 @@ describe("indexProject – incremental partial reindex", () => {
     cleanup();
   });
 
-  test("only the modified file is re-parsed on incremental reindex", async () => {
+  test("changed inputs rebuild reference context for unchanged files too", async () => {
     const orchPath = join(
       tempDir,
       "force-app",
@@ -259,6 +259,6 @@ describe("indexProject – incremental partial reindex", () => {
     writeFileSync(orchPath, originalText + "\n// modified for test\n");
 
     const result = await indexProject(tempDir, store, { mode: "incremental" });
-    expect(result.filesParsed).toBe(1);
+    expect(result.filesParsed).toBeGreaterThan(1);
   });
 });

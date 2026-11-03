@@ -8,6 +8,7 @@ import {
   ApexLexer,
   ApexParser,
   AnnotationContext,
+  AssignExpressionContext,
   CaseInsensitiveInputStream,
   ClassDeclarationContext,
   ClassBodyDeclarationContext,
@@ -34,7 +35,8 @@ import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 
-import { extractSoqlFromObject, extractSoqlSelectFields, extractSoslReturningObjects } from "./soql-extract.ts";
+import { extractSoqlFromObject, extractSoslReturningObjects } from "./soql-extract.ts";
+import { extractSoqlFieldRefs } from "./soql/extract.ts";
 import type { ParseResult } from "./types.ts";
 
 export function parseApex(filePath: string, source: string): ParseResult {
@@ -625,7 +627,8 @@ function walkExpressionsAndStatements(
         });
       }
     } else if (node instanceof SoqlLiteralContext) {
-      const info = extractSoqlFromObject(node.text);
+      const fromObject = node.query().fromNameList().fieldName()[0]?.text;
+      const info = fromObject ? { fromObject } : null;
       if (info !== null) {
         ensureSObjectPlaceholder(result, info.fromObject, filePath, node.start.line);
         result.unresolved.push({
@@ -647,12 +650,17 @@ function walkExpressionsAndStatements(
           properties: { raw: truncate(node.text, 200) },
         });
 
-        // v0.2 task #15: emit one REFERENCES_FIELD edge per simple identifier in the SELECT
-        // clause. Pass 2 drops edges whose Field node isn't in the graph (standard objects,
-        // unmodelled custom fields) — leaving the coarse SOQL_QUERIES edge as the fallback.
-        const selectFields = extractSoqlSelectFields(node.text);
-        for (const fieldName of selectFields) {
-          const fieldQName = `${info.fromObject}.${fieldName}`;
+        // Clause-aware field extraction: emit a REFERENCES_FIELD edge per field referenced
+        // in SELECT / WHERE / ORDER BY / GROUP BY / HAVING and child subqueries. Bare fields
+        // resolve tier-1 against the FROM object; relationship paths and subquery fields
+        // resolve tier-2 by leaf short-name (pass2 fieldsByShortName places single matches,
+        // drops ambiguous ones). Pass 2 also drops edges whose Field node isn't in the graph
+        // (standard objects, unmodelled custom fields), leaving the coarse SOQL_QUERIES edge
+        // as the fallback. On any extraction trouble the coarse edge above still emits.
+        const fieldRefs = extractSoqlFieldRefs(node);
+        for (const ref of fieldRefs) {
+          const tier1 = ref.path.length === 1 && ref.clause !== "SOQL_SUBQUERY";
+          const fieldQName = tier1 ? `${info.fromObject}.${ref.leaf}` : `__SHORTNAME__:${ref.leaf}`;
           result.edges.push({
             edgeType: EdgeType.ReferencesField,
             fromQName: enclosingQName,
@@ -661,7 +669,7 @@ function walkExpressionsAndStatements(
             toLabel: NodeLabel.Field,
             confidence: Confidence.Regex,
             sourceLine: node.start.line,
-            properties: { context: "SOQL_SELECT", parentSObject: info.fromObject },
+            properties: { context: ref.clause, parentSObject: info.fromObject },
           });
         }
       }
@@ -679,6 +687,43 @@ function walkExpressionsAndStatements(
           sourceLine: node.start.line,
         });
       }
+    } else if (node instanceof AssignExpressionContext) {
+      // v0.8: DML field-write detection. `obj.Field__c = value` writes the field; we want
+      // an edge from the enclosing method to the Field node. We don't know `obj`'s SObject
+      // type at parse time, so we emit a short-name-resolved candidate edge and let pass2
+      // resolve it via the FieldByShortName fallback. The LHS of the assignment is the
+      // first expression() in this AssignExpression.
+      //
+      // v0.9: constructor-arg field writes. `new Inbound_Staging__c(Status__c = 'Pending')`
+      // parses each name=value pair as an AssignExpression with LHS = bare Identifier.
+      // Walking up the parent chain to a CreatorContext gives us the SObject type, so the
+      // edge can target the full Object.Field qname directly — no short-name fallback.
+      if (enclosingQName !== null && node.ASSIGN() !== undefined) {
+        const lhsExpressions = node.expression();
+        const lhs = lhsExpressions.length >= 1 ? lhsExpressions[0] : undefined;
+        if (lhs !== undefined) {
+          // v0.9: try constructor-arg first.
+          const ctorEdge = extractConstructorArgFieldWrite(node, lhs, enclosingQName);
+          if (ctorEdge !== null) {
+            result.edges.push(ctorEdge);
+          } else {
+            // Fall through to v0.8 member-expression detection.
+            const fieldName = extractFieldWriteName(lhs);
+            if (fieldName !== null) {
+              result.edges.push({
+                edgeType: EdgeType.ReferencesField,
+                fromQName: enclosingQName,
+                fromLabel: NodeLabel.ApexMethod,
+                toQName: `__SHORTNAME__:${fieldName}`,
+                toLabel: NodeLabel.Field,
+                confidence: Confidence.Regex,
+                sourceLine: node.start.line,
+                properties: { context: "DML_WRITE" },
+              });
+            }
+          }
+        }
+      }
     }
 
     for (let i = 0; i < node.childCount; i++) {
@@ -694,6 +739,93 @@ function walkExpressionsAndStatements(
 // Receiver detection: walk up from a MethodCall to its containing DotExpression
 // to capture the receiver text (the part before the `.`).
 // ---------------------------------------------------------------------------
+
+// v0.8: extract the trailing custom field name from a DML assignment LHS.
+// Matches `obj.Field__c`, `obj.parent.Field__c`, `record.Field__c[idx]` style. Returns
+// the field's short name only if it ends in __c (custom field convention) or __r (relationship).
+// Standard fields (Name, OwnerId, etc.) and namespaced fields are not yet handled.
+function extractFieldWriteName(lhs: ParserRuleContext): string | null {
+  // The LHS of `a.Late__c = ...` parses as DotExpression( expression(a), anyId(Late__c) ).
+  if (!(lhs instanceof DotExpressionContext)) return null;
+  // DotExpressionContext has `expression()` (LHS receiver) and `anyId()` for the trailing
+  // identifier. The grammar can also nest, so we use the right-most token text.
+  const anyId = (lhs as DotExpressionContext).anyId?.();
+  const fieldName = anyId?.text;
+  if (typeof fieldName !== "string") return null;
+  if (!fieldName.endsWith("__c")) return null;
+  return fieldName;
+}
+
+// v0.9: detect constructor-arg field writes. Pattern:
+//   new Inbound_Staging__c(Status__c = 'Pending', Account__c = a.Id)
+// Each `name = value` pair inside the constructor arg list is an AssignExpressionContext
+// whose LHS is a bare Identifier (or PrimaryExpression containing an Id). If we can walk
+// up the parent chain to a CreatorContext, the createdName gives us the SObject type
+// directly — so we emit a fully-qualified Object.Field edge with no short-name fallback.
+function extractConstructorArgFieldWrite(
+  assign: AssignExpressionContext,
+  lhs: ParserRuleContext,
+  enclosingQName: string,
+):
+  | {
+      edgeType: typeof EdgeType.ReferencesField;
+      fromQName: string;
+      fromLabel: typeof NodeLabel.ApexMethod;
+      toQName: string;
+      toLabel: typeof NodeLabel.Field;
+      confidence: number;
+      sourceLine: number;
+      properties: Record<string, unknown>;
+    }
+  | null {
+  // LHS must be a simple identifier ending in __c. Walk down to find an Identifier token.
+  // PrimaryExpression(IdPrimary(anyId)) or anyId directly — we check both by reading
+  // the source text and verifying it's a bare identifier.
+  const lhsText = lhs.text;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(lhsText)) return null;
+  if (!lhsText.endsWith("__c")) return null;
+
+  // Walk up to find an enclosing CreatorContext. The AssignExpression must be a direct
+  // child of an ExpressionList inside ClassCreatorRest's Arguments — verify by chain.
+  let parent: ParserRuleContext | undefined = assign.parent;
+  let creator: CreatorContext | null = null;
+  while (parent !== undefined) {
+    if (parent instanceof CreatorContext) {
+      creator = parent;
+      break;
+    }
+    // Don't walk past the immediate enclosing expression/arguments level — if we hit
+    // a MethodCall or BlockStatement first, this is not a constructor arg.
+    if (parent instanceof MethodCallContext) return null;
+    parent = parent.parent;
+  }
+  if (creator === null) return null;
+
+  // Extract the SObject type from createdName. Apex `new Foo.Bar()` is possible; we take
+  // the trailing identifier (Bar) for inner-class new, or the single identifier for the
+  // common `new Sobject__c(...)` case.
+  const createdName = creator.createdName();
+  const idPairs = createdName.idCreatedNamePair();
+  if (idPairs.length === 0) return null;
+  const lastPair = idPairs[idPairs.length - 1];
+  const sobjectName = lastPair?.anyId().text;
+  if (typeof sobjectName !== "string") return null;
+  // Heuristic: only emit if the type ends in __c (custom SObject) or matches a common
+  // standard-object pattern (Account, Contact, etc.). Conservative: __c only — standard
+  // objects are not yet indexed by Spindle in this graph.
+  if (!sobjectName.endsWith("__c")) return null;
+
+  return {
+    edgeType: EdgeType.ReferencesField,
+    fromQName: enclosingQName,
+    fromLabel: NodeLabel.ApexMethod,
+    toQName: `${sobjectName}.${lhsText}`,
+    toLabel: NodeLabel.Field,
+    confidence: Confidence.Resolved,
+    sourceLine: assign.start.line,
+    properties: { context: "CONSTRUCTOR_ARG", parentSObject: sobjectName },
+  };
+}
 
 function receiverFromDotExpression(call: MethodCallContext): string | null {
   // Apex grammar: `obj.method(args)` parses as DotExpression( expression() , dotMethodCall(...) ).

@@ -26,7 +26,8 @@ export type DiscoveredFileKind =
   | "layout"
   | "flow"
   | "static-resource"
-  | "email-template";
+  | "email-template"
+  | "ui-bundle";
 
 export type BundleFile = {
   // Absolute path of the file on disk.
@@ -208,7 +209,10 @@ export async function discoverApexFiles(projectRoot: string): Promise<Discovered
             kind: "email-template",
             absolutePath: abs,
             relativePath: toRelative(projectRoot, abs),
-            contentHash: hashContent(readFileSync(abs)),
+            contentHash: hashContent(JSON.stringify([
+              readFileSync(abs, "utf8"),
+              safeIsFile(abs.replace(/-meta\.xml$/, "")) ? readFileSync(abs.replace(/-meta\.xml$/, ""), "utf8") : null,
+            ])),
             // Reuse parentSObject as "folder" — the email template parser knows what to do with it.
             parentSObject: folder.name,
           });
@@ -250,6 +254,30 @@ export async function discoverApexFiles(projectRoot: string): Promise<Discovered
           relativePath: toRelative(projectRoot, abs),
           contentHash: hashContent(readFileSync(abs)),
         });
+      }
+    }
+
+    // UI bundles include nested source and GraphQL files, but never build/dependency trees.
+    const uiDir = join(defaultDir, "uiBundles");
+    if (safeIsDirectory(uiDir)) {
+      for (const entry of (await readdir(uiDir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+        const bundleDir = join(uiDir, entry.name);
+        const bundleFiles: BundleFile[] = [];
+        const collect = async (dir: string): Promise<void> => {
+          for (const f of (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+            if (f.name.startsWith(".") || ["node_modules", "dist", "build", "coverage"].includes(f.name)) continue;
+            const absolutePath = join(dir, f.name);
+            if (f.isDirectory()) await collect(absolutePath);
+            else if (f.isFile() && (/\.(tsx?|jsx?|graphql|gql)$/.test(f.name) || (dir === bundleDir && f.name === "tsconfig.json"))) {
+              bundleFiles.push({ absolutePath, fileName: toRelative(bundleDir, absolutePath) });
+            }
+          }
+        };
+        await collect(bundleDir);
+        const hasher = createHash("sha1");
+        for (const f of bundleFiles) hasher.update(f.fileName).update("\0").update(readFileSync(f.absolutePath)).update("\0");
+        out.push({ kind: "ui-bundle", absolutePath: bundleDir, relativePath: toRelative(projectRoot, bundleDir), contentHash: hasher.digest("hex"), bundleName: entry.name, bundleFiles });
       }
     }
 

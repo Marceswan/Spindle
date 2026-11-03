@@ -41,7 +41,7 @@ describe("registerHook", () => {
     expect(start.hooks[0]?.command).toContain("session-start-hook");
 
     const end = json.hooks.SessionEnd[0] as { hooks: { command: string }[] };
-    expect(end.hooks[0]?.command).toContain("stop-watch");
+    expect(end.hooks[0]?.command).toContain("session-end-hook");
   });
 
   test("preserves unrelated settings", () => {

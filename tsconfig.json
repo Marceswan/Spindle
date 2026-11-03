@@ -26,5 +26,5 @@
     "allowImportingTsExtensions": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "bench/**/*.ts"],
-  "exclude": ["node_modules", "dist", ".sfdx-graph"]
+  "exclude": ["node_modules", "dist", ".sfdx-graph", "test/fixtures"]
 }

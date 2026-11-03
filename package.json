@@ -11,28 +11,30 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test --timeout 30000",
-    "build": "bun build src/cli.ts --compile --outfile dist/sfdx-graph-mcp",
+    "build": "bun run build:web && bun build src/cli.ts --compile --outfile dist/sfdx-graph-mcp",
     "start": "bun run src/cli.ts",
-    "bench": "SFDX_GRAPH_LOG_LEVEL=silent bun run bench/cli.ts"
+    "bench": "SFDX_GRAPH_LOG_LEVEL=silent bun run bench/cli.ts",
+    "build:web": "cd web && bun install --frozen-lockfile && bun run build && cd .. && bun run scripts/gen-embedded-assets.ts"
   },
   "dependencies": {
     "@apexdevtools/apex-parser": "^4.4.0",
     "@apexdevtools/vf-parser": "1.1.0",
     "@babel/parser": "^7.26.0",
     "@lwc/metadata": "15.0.5",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "chokidar": "^4.0.0",
     "commander": "^12.0.0",
     "fast-xml-parser": "^4.5.0",
     "parse5": "^7.2.0",
-    "pino": "^9.5.0"
+    "pino": "^9.5.0",
+    "graphql": "^16.14.0",
+    "typescript": "^5.6.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.0",
-    "pino-pretty": "^13.0.0",
-    "typescript": "^5.6.0"
+    "pino-pretty": "^13.0.0"
   },
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": ">=1.3.14"
   }
 }

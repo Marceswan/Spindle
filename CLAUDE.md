@@ -1,5 +1,7 @@
 # CLAUDE.md — Spindle (sfdx-graph-mcp)
 
+> Current implementation: one shared authenticated loopback service owns the database and watchers (`src/service/`); `src/server.ts` is a stdio adapter. Register tools in `src/service/tools.ts`. Any changed inventory rebuilds the project transactionally. Use Bun 1.3.14. Older phase descriptions below are historical; see the remediation results document for current behavior.
+
 Project instructions for working on **Spindle**, an MCP server that indexes SFDX projects into a queryable metadata graph.
 
 Read `sfdx-graph-mcp-design.md` (project root) before doing anything non-trivial. It is the authoritative source of truth for architecture, schema, tool surface, and roadmap. If this file conflicts with the design doc, the design doc wins.

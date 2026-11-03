@@ -8,12 +8,13 @@ Spindle is a local-first MCP server that indexes SFDX projects into a queryable 
 git clone https://github.com/Kelley-Austin/Spindle.git
 cd Spindle
 bun install
-bun test                  # 85+ tests should pass
+cd web && bun install --frozen-lockfile && cd ..
+bun test --timeout 30000
 bun run typecheck         # tsc --noEmit, strict + exactOptionalPropertyTypes
 ```
 
 Requirements:
-- Bun 1.3.8 (pinned for reproducibility; bumps go through CI)
+- Bun 1.3.14 (pinned for reproducibility; bumps go through CI)
 - macOS, Linux, or Windows for development
 
 ## Read these before submitting a PR
@@ -37,7 +38,7 @@ The pipeline routes each discovered file to a parser via `src/pipeline/parse-dis
 ## Adding a new MCP tool
 
 1. Create `src/tools/<tool-name>.ts` exporting `{ name, description, inputSchema, handler }`. See `src/tools/get-permission-access.ts` for the canonical pattern.
-2. Register it in `src/server.ts` in the appropriate array (`toolsWithStore` if it needs the shared `GraphStore`, `toolsStandalone` if not).
+2. Register it in `src/service/tools.ts`; all adapters dispatch through that shared host.
 3. Add a tool test under `test/tools/<tool-name>.test.ts`.
 
 ## Commit and PR conventions

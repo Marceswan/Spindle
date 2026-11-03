@@ -1,0 +1,16 @@
+query GetCustomerEmail {
+  Customer__c {
+    Email__c
+    Tier__c
+  }
+}
+
+fragment CustomerCore on Customer__c {
+  Email__c
+}
+
+mutation UpdateTier {
+  Customer__c {
+    Tier__c
+  }
+}

@@ -75,7 +75,12 @@ export class GraphStore {
       );
     }
 
-    // Migrations from row.version to CURRENT_SCHEMA_VERSION go here in future versions.
+    // Idempotent forward migration. applySchema() already ran the IF NOT EXISTS DDL
+    // (which adds any new tables to an existing db), so a version bump only needs to
+    // advance the stored version row.
+    if (row.version < CURRENT_SCHEMA_VERSION) {
+      this.db.prepare("UPDATE schema_version SET version = ?").run(CURRENT_SCHEMA_VERSION);
+    }
   }
 
   close(): void {
@@ -203,10 +208,49 @@ export class GraphStore {
       .run(projectId, filePath, hash, Date.now());
   }
 
+  clearProjectGraph(projectId: number): void {
+    this.db.prepare("DELETE FROM nodes WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM file_hashes WHERE project_id = ?").run(projectId);
+    this.db.prepare("DELETE FROM file_backrefs WHERE project_id = ?").run(projectId);
+  }
+
   deleteNodesFromFile(projectId: number, filePath: string): void {
     // Cascade removes outgoing/incoming edges.
     this.db
       .prepare("DELETE FROM nodes WHERE project_id = ? AND file_path = ?")
       .run(projectId, filePath);
+  }
+
+  // --- Metrics ------------------------------------------------------------
+
+  recordToolInvocation(row: {
+    projectId: number | null;
+    toolName: string;
+    paramsJson: string | null;
+    durationMs: number;
+    resultTokens: number;
+    baselineTokens: number;
+    tokensSaved: number;
+    method: string;
+    createdAt: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO tool_invocation
+           (project_id, tool_name, params_json, duration_ms,
+            result_tokens, baseline_tokens, tokens_saved, method, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.projectId,
+        row.toolName,
+        row.paramsJson,
+        row.durationMs,
+        row.resultTokens,
+        row.baselineTokens,
+        row.tokensSaved,
+        row.method,
+        row.createdAt,
+      );
   }
 }

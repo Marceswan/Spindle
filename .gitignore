@@ -28,3 +28,14 @@ dist/
 
 # Test artifacts
 coverage/
+
+# Superpowers brainstorming companion (local mockups)
+.superpowers/
+
+# Web SPA build artifacts
+web/node_modules/
+web/dist/
+
+# Preserved conflict snapshots and local execution ledger
+.recovery/
+.superpowers/

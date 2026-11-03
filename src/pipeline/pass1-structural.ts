@@ -23,6 +23,7 @@ export function runPass1(
   files: DiscoveredFile[],
   store: GraphStore,
   forceReindex: boolean,
+  prepared?: ReadonlyMap<string, ReturnType<typeof parseFile>>,
 ): Pass1Result {
   let insertedFilesCount = 0;
   let parsedFilesCount = 0;
@@ -43,7 +44,7 @@ export function runPass1(
 
     let parsed;
     try {
-      parsed = parseFile(file);
+      parsed = prepared?.get(file.relativePath) ?? parseFile(file);
     } catch (err) {
       warnings.push({
         file: file.relativePath,

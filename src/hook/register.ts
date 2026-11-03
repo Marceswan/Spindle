@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { execPath } from "node:process";
 
 const START_HOOK_SUFFIX = "session-start-hook";
-const STOP_HOOK_SUFFIX = "stop-watch";
+const STOP_HOOK_SUFFIX = "session-end-hook";
 const SPINDLE_BINARY_NAME = "sfdx-graph-mcp";
 
 type HookEntry = {
@@ -68,7 +68,7 @@ function buildSessionStartCommand(binary: string): string {
 }
 
 function buildSessionEndCommand(binary: string): string {
-  return `${quoteIfNeeded(binary)} stop-watch`;
+  return `${quoteIfNeeded(binary)} session-end-hook`;
 }
 
 function quoteIfNeeded(p: string): string {
@@ -125,13 +125,13 @@ export function registerHook(opts: RegisterOptions = {}): RegisterResult {
 
   if (!settings.hooks) settings.hooks = {};
 
-  // SessionStart — runs the index + spawns the watch daemon. Use no matcher so the hook
+  // SessionStart — indexes through the shared service. Use no matcher so the hook
   // fires on every SessionStart subtype: startup, resume, clear, compact. Skipping any of
   // these can leave the graph stale across resumed sessions; the hook is idempotent so
   // re-firing is cheap.
   upsertHook(settings, "SessionStart", null, startCommand, isSessionStartHook);
 
-  // SessionEnd — terminates the watch daemon. SessionEnd does not use matchers in
+  // SessionEnd — leaves shared watchers available to other clients. SessionEnd does not use matchers in
   // Claude Code; emit a single entry with no matcher.
   upsertHook(settings, "SessionEnd", null, endCommand, isSessionEndHook);
 
@@ -228,11 +228,8 @@ function isSessionStartHook(h: HookEntry): boolean {
 }
 
 function isSessionEndHook(h: HookEntry): boolean {
-  // Match `... stop-watch` or `... stop-watch --cwd ...`. Require either a leading space
-  // or path separator so we don't false-match unrelated commands containing the string.
-  if (!hasSubcommand(h, STOP_HOOK_SUFFIX)) return false;
-  const cmd = (h.command ?? "");
-  return /(?:^|[\s/])stop-watch(?:\s|$)/.test(cmd);
+  // Also remove legacy SessionEnd hooks that would stop another client's watcher.
+  return hasSubcommand(h, STOP_HOOK_SUFFIX) || hasSubcommand(h, "stop-watch");
 }
 
 function hasSubcommand(h: HookEntry, subcommand: string): boolean {

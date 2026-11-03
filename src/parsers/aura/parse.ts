@@ -128,6 +128,18 @@ export function parseAuraBundle(file: DiscoveredFile): ParseResult {
         properties: { bundle: bundleQName, fileName: bf.fileName },
       });
 
+    } else if (lowerName.endsWith("helper.js")) {
+      helperQName = `${bundleQName}.${bf.fileName}`;
+      result.nodes.push({
+        label: NodeLabel.AuraHelper,
+        name: bf.fileName,
+        qualifiedName: helperQName,
+        startLine: 1,
+        endLine: 1,
+        properties: { bundle: bundleQName, fileName: bf.fileName },
+      });
+    }
+    if (lowerName.endsWith("controller.js") || lowerName.endsWith("helper.js")) {
       COMPONENT_GET_CONTROLLER.lastIndex = 0;
       let matched: RegExpExecArray | null;
       while ((matched = COMPONENT_GET_CONTROLLER.exec(source)) !== null) {
@@ -144,20 +156,10 @@ export function parseAuraBundle(file: DiscoveredFile): ParseResult {
           properties: { controllerJs: bf.fileName, methodName },
         });
       }
-    } else if (lowerName.endsWith("helper.js")) {
-      helperQName = `${bundleQName}.${bf.fileName}`;
-      result.nodes.push({
-        label: NodeLabel.AuraHelper,
-        name: bf.fileName,
-        qualifiedName: helperQName,
-        startLine: 1,
-        endLine: 1,
-        properties: { bundle: bundleQName, fileName: bf.fileName },
-      });
     }
   }
 
-  if (boundController !== null && controllerQName === null) {
+  if (boundController !== null) {
     result.edges.push({
       edgeType: EdgeType.AuraUsesApex,
       fromQName: bundleQName,

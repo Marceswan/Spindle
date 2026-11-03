@@ -79,3 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_backrefs_target ON file_backrefs(target_file);
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
+
+-- v1.1 Workbench: per-tool-call savings instrumentation. params_json holds API
+-- names/identifiers only, never code contents.
+CREATE TABLE IF NOT EXISTS tool_invocation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    tool_name TEXT NOT NULL,
+    params_json TEXT,
+    duration_ms INTEGER,
+    result_tokens INTEGER,
+    baseline_tokens INTEGER,
+    tokens_saved INTEGER,
+    method TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_project ON tool_invocation(project_id);
+CREATE INDEX IF NOT EXISTS idx_tool_invocation_created ON tool_invocation(created_at);

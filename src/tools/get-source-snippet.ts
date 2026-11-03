@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 
 import { GraphStore } from "../graph/store.ts";
-import { searchNodes } from "../graph/queries.ts";
+import { getNodeByQualifiedName } from "../graph/queries.ts";
 
 export const name = "get_source_snippet";
 
@@ -38,18 +38,8 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
   const { project_id, qualified_name, context_lines } = input as Input;
   const ctx = context_lines ?? 0;
 
-  // Search for the node by qualified name (no label hint).
-  const nodes = searchNodes(store, {
-    projectId: project_id,
-    qualifiedNamePattern: `^${escapeRegex(qualified_name)}$`,
-    limit: 1,
-  });
-
-  if (nodes.length === 0) {
-    return { error: `Node not found: ${qualified_name}` };
-  }
-
-  const node = nodes[0]!;
+  const node = getNodeByQualifiedName(store, project_id, qualified_name);
+  if (node === null) return { error: `Node not found: ${qualified_name}` };
   if (node.filePath === null) {
     return { error: `Node has no associated file: ${qualified_name}` };
   }
@@ -79,8 +69,4 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     end_line: to + 1,
     source,
   };
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

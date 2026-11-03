@@ -144,4 +144,29 @@ describe("Flow pipeline", () => {
     ) as Report;
     expect(result.flows.some((f) => f.qualified_name === "Customer_Onboarding")).toBe(true);
   });
+
+  test("FLOW_REFERENCES_FIELD per-field edges resolve to Customer__c fields (tier-1)", () => {
+    const email = edgeWithProps(store, projectId, EdgeType.FlowReferencesField, "Customer_Field_Refs", "Customer__c.Email__c");
+    const tier = edgeWithProps(store, projectId, EdgeType.FlowReferencesField, "Customer_Field_Refs", "Customer__c.Tier__c");
+    expect(email).not.toBeNull();
+    expect(tier).not.toBeNull();
+  });
+
+  test("get_field_usage marks flows authoritative and returns the per-field Flow even with include_indirect=false", async () => {
+    const { handler } = await import("../../src/tools/get-field-usage.ts");
+    type Report = {
+      flows: { qualified_name: string; context: string }[];
+      coverage: { authoritative: string[]; indirect: string[] };
+    };
+    const result = await handler(
+      { project_id: projectId, field: "Customer__c.Email__c", include_indirect: false },
+      store,
+    ) as Report;
+    // flows is now an authoritative surface...
+    expect(result.coverage.authoritative).toContain("flows");
+    expect(result.coverage.indirect).toContain("flows"); // coarse object-level fallback remains available
+    // ...and the per-field Flow hit survives WITHOUT include_indirect, proving it's a direct
+    // FLOW_REFERENCES_FIELD edge, not the coarse FLOW_DML_ON fallback.
+    expect(result.flows.some((f) => f.qualified_name === "Customer_Field_Refs")).toBe(true);
+  });
 });

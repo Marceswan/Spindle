@@ -1,5 +1,7 @@
 # Spindle: SFDX Metadata Graph MCP Server
 
+> Implementation update (2026-11-03): one authenticated shared service now owns the database, all project watchers, HTTP MCP and the Workbench on 127.0.0.1:47839; stdio is a forwarding adapter. Changed projects rebuild atomically. Earlier per-client ownership, unauthenticated UI, and file-only incremental descriptions are superseded. Explore filters/expansion, savings timeline and method picker remain planned. See `docs/reviews/2026-11-03-remediation-results.md` for implemented scope and evidence.
+
 **Working name:** `sfdx-graph-mcp`
 **Product name (placeholder):** Spindle
 **Document type:** Solution Design
@@ -46,7 +48,9 @@ The result is that for SFDX work specifically, Claude Code burns tokens reading 
 - **NG4.** Full SOQL semantic analysis (relationship traversal correctness, polymorphic relationship resolution). v1 captures the dominant patterns; full correctness is v2+.
 - **NG5.** Flow execution simulation. Flow XML is parsed for structure and references only.
 - **NG6.** Multi-org diffing. v1 is per-project.
-- **NG7.** A web UI. Stdio MCP server only.
+- **NG7 (revised v1.1).** The MCP server itself remains stdio-only. A separate, opt-in
+  local Workbench UI ships as the `spindle ui` subcommand (loopback HTTP, embedded SPA,
+  read-only over the same SQLite db). It is not part of the MCP transport. See section 19.
 
 ## 4. Architecture
 
@@ -972,6 +976,21 @@ sfdx-graph-mcp/
 
 ## 14. Phased Roadmap
 
+**Two version schemes.** The `vN.M` numbers below are design-doc *feature phases* —
+milestones describing what got built. They are distinct from the *released binary SemVer*
+(git tags `v1.0.0`..`v1.1.2`, `package.json` `version`), which describes what shipped to
+users. One SemVer release can bundle several phases. Mapping:
+
+| SemVer release | Design-doc phase(s) |
+|----------------|---------------------|
+| `1.0.x`        | v1.0 distribution |
+| `1.1.x`        | SessionStart hook |
+| `1.3.0`        | v0.6 + v0.7 |
+| `1.4.0`        | v0.8 |
+| `1.5.0`        | v0.9 |
+| `1.6.0`        | v1.1 Workbench UI |
+| `1.7.0`        | v1.2 field-resolution precision (advanced Flow + clause-aware SOQL) (unreleased) |
+
 ### v0.1 (MVP, ~3 weeks of focused work)
 
 Scope: Apex-only graph.
@@ -1044,13 +1063,203 @@ Scope: Polish and distribution.
 - Telemetry-free. No outbound network calls at runtime. Documented explicitly in the README as a privacy stance.
 - License: MIT. All source in the public GitHub repository.
 
-### v1.1+
+### v0.6 (shipped)
 
+Scope: uiBundle indexing — modern React/TS apps shipped inside `force-app/.../uiBundles/<name>/src/`.
+
+- New `DiscoveredFileKind`: `ui-bundle`. Discovery walks `uiBundles/*/src/**` for `.ts|.tsx|.js|.jsx|.mjs|.cjs`; skips `node_modules`, `dist`, `build`, `.next`, `coverage`, `e2e`, `scripts`, `.turbo`, `.cache`, `__snapshots__`, `.d.ts`.
+- New parser at `src/parsers/ui-bundle/` using `@babel/parser` (already a dep) with `typescript` + `jsx` plugins. Pure: takes a `DiscoveredFile`, returns nodes/edges.
+- tsconfig path-alias resolution (`@/*`, `@api/*`, etc.) — JSONC-tolerant tsconfig reader and a path-alias matcher.
+- New node labels: `UiBundle`, `TsModule`, `TsFunction`, `TsClass`, `ReactComponent`. A function/class is labelled `ReactComponent` if its body returns JSX or it extends `React.Component`/`PureComponent`; otherwise `TsFunction`/`TsClass`.
+- New edge types: `TS_IMPORTS`, `TS_CALLS`, `TS_RENDERS`, `TS_EXTENDS` (intra-bundle); `UI_BUNDLE_USES_APEX`, `UI_BUNDLE_USES_FIELD`, `UI_BUNDLE_USES_LABEL`, `UI_BUNDLE_USES_RESOURCE` (cross-domain, resolved by pass 2 against existing Apex/Field/CustomLabel/StaticResource nodes).
+- LWC-compatible `@salesforce/apex|schema|label|resourceUrl/*` specifiers produce typed cross-domain edges; other `@salesforce/*` packages (`platform-sdk`, `agentforce-conversation-client`) fall through to `DEPENDS_ON_EXTERNAL` → `ExternalNamespace`. Unresolved relative/alias specifiers emit a low-confidence `DEPENDS_ON_EXTERNAL` so the link isn't lost.
+- `get_field_usage` extended with a `ui_bundles` bucket; cross-domain `UI_BUNDLE_USES_FIELD` edges show up in field-impact reports.
+- No SQL DDL changes. Schema is label/edge-type agnostic so `CURRENT_SCHEMA_VERSION` stays at 1.
+
+**Out of v0.6 scope (parked for v0.7+):**
+- Type resolution / TypeScript Compiler API. Calls resolve by name + scope; member-expression calls (`Foo.bar()`) and namespace-imported callees are not yet linked.
+- GraphQL operation extraction (the modern uiBundle data-access path).
+- `.d.ts` indexing.
+- `node_modules` indexing — we never read it.
+
+**Demo:** Index a uiBundle, then "who in `agentConsole` calls `AccountService.cleanup`?" or "what `Customer__c` fields does the React app touch?" answered as graph queries.
+
+### v0.7 (shipped)
+
+Scope: deeper uiBundle understanding — member-expression calls, `.d.ts` indexing, GraphQL operation extraction, and a TypeScript Compiler API enrichment pass.
+
+**Member-expression call resolution.** The babel walker now captures full receiver chains (`Foo.bar.baz()`) instead of dropping non-identifier callees. The parser resolves the receiver through (a) namespace imports (`import * as Foo from './mod'; Foo.bar()`) and (b) sibling-export lookup on a single-named import (`import Foo from './mod'; Foo.bar()` where `bar` is a sibling export of `Foo` in `./mod`). Dotted JSX (`<Tabs.Root>`) is resolved through the same logic. New edge variants: still `TS_CALLS` / `TS_RENDERS`, but with `properties.via` recording the resolution path (`namespace-import`, `receiver-sibling-export`, `namespace-jsx`, `receiver-sibling-jsx`).
+
+**`.d.ts` indexing.** Discovery now includes ambient declaration files. New node labels: `TsInterface`, `TsTypeAlias`. New edge: `TS_TYPE_EXTENDS` (interface→interface), `TS_IMPLEMENTS` (class→interface). The parser does NOT emit runtime nodes (`TsFunction`/`TsClass`) from `.d.ts` — only type-level constructs. Both `import type { X }` and the bundler's `.d.ts` fallback resolution are handled by adding `.d.ts` to the resolver's extension probe list (last in priority so a real `.ts` wins when both exist).
+
+**GraphQL operation extraction.** Adds `graphql` (^16.14.0) as a dependency. New node labels: `GraphqlOperation`, `GraphqlFragment`. New edges: `GRAPHQL_USES_FIELD` (operation/fragment → Field, cross-domain), `GRAPHQL_USES_TYPE` (operation/fragment → SObject, cross-domain), `GRAPHQL_DEFINED_IN` (operation → TsModule). Sources of GraphQL:
+- Standalone `.graphql` / `.gql` files in `uiBundles/*/src/`.
+- `gql\`...\`` tagged template literals — captured both inside function bodies (call/render walker) and at module scope (top-level variable initializer walker added in v0.7).
+
+Cross-domain mapping is name-based: a query selecting `Customer__c { Email__c }` produces a `GRAPHQL_USES_TYPE → Customer__c` (SObject) and `GRAPHQL_USES_FIELD → Customer__c.Email__c` (Field). Pass2 drops the edge if no matching node exists, so the graph never carries dangling references. v0.7 walks depth-1 selections only — schema-aware deeper resolution waits on an introspection-blob loader.
+
+**TypeScript Compiler API enrichment.** Adds `typescript` (^5.6.0) as a runtime dependency. New pipeline stage `runPassTsResolve` runs between pass1 and pass2, only when at least one `UiBundle` node exists. Per bundle: builds a `ts.Program` over all `.ts/.tsx/.d.ts` files, walks each source file with the type checker, and emits:
+- `TS_CALLS` / `TS_RENDERS` with `confidence=Resolved` and `properties.via=ts-compiler` for cases babel couldn't resolve (re-export barrels, namespace imports through index files, type-aliased symbols).
+- `TS_TYPE_REFERENCES` from a function/class declaration to interfaces/type aliases referenced in its parameter signatures.
+
+The pass uses `getAliasedSymbol` to follow `import type` aliases through to their underlying interface/type declarations. It does not re-walk JSX (babel already covers it) and does not attempt full type inference for runtime values — its job is symbol resolution.
+
+**Distribution impact.** The Bun-compiled binary grows from ~64MB (v0.6) to ~71MB (v0.7); the `typescript` + `graphql` dependencies bundle together at ~7MB. Documented as a deliberate trade-off in CLAUDE.md (v0.1 dependency-minimization policy is consciously relaxed for v0.7's resolver-grade analysis).
+
+**Out of v0.7 scope (parked for v0.8+):**
+- Full type inference on runtime values (we resolve declarations, not call-site types).
+- GraphQL schema-introspection-aware selection-set walking beyond depth 1.
+- Cross-bundle imports (when two uiBundles in the same SFDX project share code via a third local package).
+- Return-type `TS_TYPE_REFERENCES` (we capture parameter types only).
+
+**Demo:** "Who uses the `AgentContext` interface" — answered by querying `TS_TYPE_REFERENCES` + `TS_IMPLEMENTS` edges with target `AgentContext`. "What `Customer__c` fields does the React app's GraphQL touch?" — answered by `GRAPHQL_USES_FIELD` edges into the `Customer__c.*` Field nodes.
+
+### v0.8 (shipped)
+
+Scope: closes the three field-impact recall gaps surfaced by the trace-accuracy bench.
+
+**1. DML field-write indexing.** The Apex parser now visits `AssignExpressionContext`
+nodes and detects `obj.Field__c = value` assignments. For each detected write it emits a
+`REFERENCES_FIELD` edge with target qname `__SHORTNAME__:<FieldName>` and context
+`DML_WRITE`. Pass 2 resolves the short name via a new `fieldsByShortName` index in the
+symbol table:
+
+- Single candidate: resolve confidently.
+- Multiple candidates (e.g. `Status__c` exists on 4 SObjects in matrix): disambiguate by
+  the enclosing method's SObject context — union of SOQL_QUERIES + DML_ON edge targets +
+  the method's return type and parameter types when they end in `__c`. If exactly one
+  candidate's `parentSObject` matches, resolve. Otherwise drop (precision-first).
+- No candidates: drop.
+
+**2. Call-graph propagation in `get_field_usage`.** Two new parameters:
+
+- `propagate?: boolean` — after collecting direct field hits, BFS over inbound CALLS
+  edges from each hit method, adding any unique caller. Default false.
+- `propagate_depth?: number` — BFS depth. Default 2.
+
+Propagated entries are tagged with context `CALL_GRAPH(dN)` so consumers can distinguish
+direct hits from propagated callers. Solves the `accept()` → `clearLateFlag()` → Late__c
+case from the matrix bench: with propagation, Late__c recall hits 100%.
+
+**3. `include_indirect` semantics held stable.** The original v0.8 plan was to always
+include `DML_ON` edges (since DML touches all writable fields) and put only `SOQL_QUERIES`
+behind `include_indirect`. Bench testing showed this dropped precision ~10pts because
+most parent-SObject DML callers don't reference the specific field. Reverted to keep both
+behind `include_indirect`. The v0.8 win is the DML-write *parser* detection, not the
+runtime bucket-split.
+
+**Bench results on matrix after v0.8** (10 + 1 propagation target):
+
+| Mode | Recall | Precision | F2 |
+|---|---|---|---|
+| Default (no propagate)   | 96.0% | 93.6% | 94.9% |
+| With propagation target  | 97.1% | 86.7% | 91.7% |
+
+Late__c default-mode recall: 82.4% (v0.7) → 88.2% (v0.8). With propagate=true: 100%.
+Status__c recall: 71.4% — the remaining 3 misses are constructor-arg field writes
+(`new Inbound_Staging__c(Status__c = 'Pending')`) which v0.8 doesn't yet detect; that's
+v0.9 work.
+
+**Out of v0.8 scope (parked for v0.9+):**
+
+- Constructor-arg field writes: `new Foo(Field__c = value)`. Requires walking
+  `CreatorContext` arg lists; the field-name disambiguation logic from v0.8 carries over.
+- DML field writes through `Map`/`List` literals: `new List<Foo>{ new Foo(...) }`.
+- Variable-declaration type tracking (would replace return-type/parameter-type
+  disambiguation with a more precise per-receiver lookup).
+
+### v0.9 (shipped)
+
+Scope: close the constructor-arg field-write gap surfaced by the v0.8 bench. Status__c
+recall jumps from 80% to 95.5% on matrix.
+
+**Constructor-arg field write detection.** Apex SObject constructors take name-value
+pairs (`new Inbound_Staging__c(Status__c = 'Pending', Account__c = a.Id)`) where each
+pair is grammatically an `AssignExpressionContext` whose LHS is a bare Identifier — the
+v0.8 detector only fired for `obj.Field__c = ...` patterns (LHS = DotExpression) and
+silently dropped these.
+
+New `extractConstructorArgFieldWrite` helper:
+
+1. Verifies the LHS is a single `__c` identifier.
+2. Walks up the AST to find the enclosing `CreatorContext`. If the path passes through
+   a `MethodCallContext` first (i.e. this is a regular assignment inside a call's args,
+   not a constructor arg), aborts.
+3. Reads the constructor's `createdName` to get the SObject API name.
+4. Emits a fully-qualified `REFERENCES_FIELD` edge to `<SObject>.<Field>` with
+   `context: "CONSTRUCTOR_ARG"` and `confidence: Resolved` — no short-name fallback
+   needed because the SObject type is statically known from the constructor target.
+
+**List/Map literal field writes — free via recursion.** `new List<Foo>{ new Foo(F = v) }`
+contains a nested `CreatorContext`; the walker already recurses into all
+`ParserRuleContext` children, so the inner `Foo` constructor's args are detected
+naturally. Same for `new Map<Id, Foo>{ id => new Foo(F = v) }` and set literals.
+
+**Variable-type tracking — parked.** v0.9 originally planned per-variable type tracking
+for receiver disambiguation (`Inbound_Staging__c s = ...; s.Status__c = X`). Bench
+testing showed v0.8's parameter+return-type disambiguation already handles most cases on
+matrix (Status__c recall hit 95.5% without var-type tracking). Deferred to v0.10 if
+demand surfaces.
+
+**Bench results on matrix after v0.9** (11 targets including propagation):
+
+| Aggregate | v0.8 | v0.9 |
+|---|---|---|
+| Recall | 96.0% | **98.6%** |
+| Precision | 93.6% | 85.5% |
+| F2 | 94.9% | 92.7% |
+| Surface coverage | 100% | 100% |
+| Targets PASSing | 8/10 | **9/11** |
+
+- `Inbound_Staging__c.Status__c` flipped FAIL → **PASS** (P=100%, R=95.5%; was R=80%).
+- `Period_Close__c.Close_Status__c` still PASS, now reports 10 additional legitimate
+  constructor-arg writers (test factories, schema bootstrap).
+- `Actual_Revenue__c.Late__c` default mode: R=88.9% (the 2 remaining misses are
+  `accept`/`reject` requiring `propagate=true`).
+
+Precision dropped 8pts in aggregate not because Spindle's edges got worse but because the
+bench is now finding many more legitimate constructor-arg writers than my hand-curated
+ground truth enumerated. The over-claim list is now dominated by real positives — the GT
+files need ongoing maintenance as Spindle's recall improves.
+
+**Out of v0.9 scope (parked for v0.10+):**
+
+- Per-variable type tracking for highest-precision DML-write resolution.
+- Standard-object field writes (we only emit for `__c`-suffixed SObjects).
+- Dynamic SObject construction: `SObjectType.newSObject().put('Field__c', val)`.
+- Apex-managed map-put field assignments: `sObj.put('Field__c', val)`.
+
+### v1.1 (shipped) — Workbench UI
+
+Local-first web UI (`spindle ui`) for exploring the graph and visualizing token savings.
+Four tabs (Overview / Explore / Field Impact / Permissions) over an embedded React +
+cytoscape SPA, plus live token-savings instrumentation (`tool_invocation` table, schema
+v2). See section 19 for the full design and
+`docs/superpowers/specs/2026-05-29-spindle-workbench-ui-design.md`.
+
+### v1.2 (shipped) — Field-resolution precision
+
+Advanced Flow extraction (per-field `FLOW_REFERENCES_FIELD` edges from record elements,
+assignments, decisions, and formula resources via an intra-parser variable->SObject binding
+table; `get_field_usage` `flows` bucket now authoritative) and clause-aware SOQL field
+extraction (`src/parsers/apex/soql/extract.ts` — WHERE/ORDER BY/GROUP BY/HAVING/subquery
+fields become `REFERENCES_FIELD` edges, context-tagged, robust to whitespace-stripped
+`node.text`). Specs: `docs/superpowers/specs/2026-05-29-spindle-field-resolution-precision-milestone.md`
+and its two children. Deferred: full recursive-descent SOQL AST + pass2 relationship-path
+terminal resolution (relationship/subquery fields currently resolve by leaf short-name).
+
+### Pending (post-v1.2)
+
+- Full recursive-descent SOQL AST + pass2 relationship-path terminal resolution (`Account__r.Name` -> `Account__c.Name`).
+- Cypher gaps: OPTIONAL MATCH, WITH chaining, aggregates beyond `count()`, UNWIND, write ops.
+- Self-update command with GPG-signed checksums.
 - Multi-org diff mode.
 - Translation Workbench integration (intersects with Lingora).
 - VS Code companion extension that surfaces graph queries as code lens.
 - Apex test coverage overlay (consumes `.sf/orgs/.../runtime/testresults` if present).
-- Web UI for offline exploration (Vite + the same SQLite db).
+- Stubbed `reset` and `doctor` CLI subcommands.
+- Per-variable type tracking; standard-object field writes; dynamic SObject construction
+  (`SObjectType.newSObject().put(...)` / `sObj.put('Field__c', val)`).
 
 ## 15. Distribution and Packaging
 
@@ -1317,6 +1526,69 @@ The `index`, `query`, and `reset` subcommands let users automate workflows (e.g.
 - 50 GitHub stars within 90 days of public v1.0 release.
 - At least 3 issues or PRs from external contributors within 6 months.
 - Featured or mentioned in at least one Salesforce community channel (Trailblazer Community, SFXD Discord, sfdc-dx Slack, or equivalent).
+
+## 19. Workbench UI (v1.1)
+
+A local-first web UI for exploring the graph and seeing the token savings Spindle
+produces. Shipped in v1.1; promotes NG7 from "no web UI" to "opt-in local UI, MCP
+server still stdio-only." Full design:
+`docs/superpowers/specs/2026-05-29-spindle-workbench-ui-design.md`.
+
+### 19.1 Launch and serving
+
+- Subcommand: `spindle ui [project-path] [--port N] [--no-open] [--db-path P]`.
+- `Bun.serve` bound to `127.0.0.1` only; OS-picked port unless `--port`. The URL is
+  printed to **stderr** (stdout stays reserved for the MCP transport); the browser opens
+  automatically unless `--no-open`.
+- One process, separate from the stdio MCP server. No outbound network — inbound loopback
+  only, started explicitly by the user.
+
+### 19.2 Architecture
+
+Two entry points (MCP stdio + `spindle ui`) share one SQLite db and the existing query/
+tool layer. `src/web/api.ts` is a thin HTTP skin: it reuses `graph/queries.ts`
+(`listProjects`, `getSchemaSummary`, `getNeighborhood`, `getSavingsSummary`) and the
+existing MCP tool handlers (`search_graph`, `trace_references`, `get_field_usage`,
+`get_permission_access`) directly — no query logic is duplicated. `src/web/assets.ts`
+serves the SPA from `EMBEDDED_ASSETS` (compiled in) with a dev fallback to `web/dist`.
+
+### 19.3 API surface (`/api/*`, read-only)
+
+`GET /api/projects`, `/api/schema?project=`, `/api/savings?project=`,
+`/api/neighborhood?project=&id=&depth=&cap=`, `/api/search?project=&q=&label=`,
+`/api/trace?project=&start=&direction=`, `/api/field-usage?project=&field=`,
+`/api/permission-access?project=&type=&target=`.
+
+### 19.4 SPA (`web/`)
+
+Vite + React + TypeScript, cytoscape.js for the Explore force graph. Built to static
+assets only — cytoscape/react are not runtime deps of the binary; the build embeds the
+compiled output via `scripts/gen-embedded-assets.ts`. Four tabs: Overview (savings KPIs +
+per-tool bars + corpus counts), Explore (force-directed neighborhood, filter + node cap),
+Field Impact (`get_field_usage` by surface), Permissions (`get_permission_access` chains).
+
+### 19.5 Savings instrumentation
+
+Every MCP tool call is recorded into a new `tool_invocation` table (schema v2). For each
+call Spindle stores tool name, params (API names only — never code contents), duration,
+result tokens, an estimated grep+read baseline, and tokens saved. The estimator
+(`src/metrics/estimate-savings.ts`, pure) is hybrid:
+
+- **Result-aware** when the result references files: baseline = sum of those files' bytes
+  / 4 + a small per-file grep allowance. Used by field-usage, trace, permission, etc.
+- **Multiplier fallback** otherwise: result tokens x a per-tool constant derived from the
+  bench harness (`src/metrics/baseline-multipliers.ts`).
+
+All figures are labeled "estimated" in the UI with a method tooltip. Recording is on by
+default (local-only), disabled with `SFDX_GRAPH_NO_METRICS=1`, and never throws into a
+tool response.
+
+### 19.6 Build and distribution
+
+`bun run build:web` builds the SPA and regenerates `src/web/embedded-assets.ts`; the
+top-level `bun run build` runs it before `bun build --compile`, so every release binary
+embeds the SPA. The committed `embedded-assets.ts` is a small stub (empty map → dev disk
+fallback); the real map is build-generated. CI and release both run `build:web`.
 
 ## Appendix A: Comparison to codebase-memory-mcp (DeusData)
 

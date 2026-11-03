@@ -4,12 +4,15 @@
 import { basename } from "node:path";
 
 import { discoverApexFiles, readProjectManifest } from "./discover.ts";
+import { parseFile } from "./parse-dispatch.ts";
 import { runPass1 } from "./pass1-structural.ts";
 import { runPass2 } from "./pass2-intra-domain.ts";
 import { runPass3 } from "./pass3-cross-domain.ts";
 import { runPass4 } from "./pass4-reverse-index.ts";
-import { getNodeCounts, getEdgeCounts } from "../graph/queries.ts";
+import { runPassTsResolve } from "./pass-ts-resolve.ts";
+import { getAllNodesForProject, getNodeCounts, getEdgeCounts } from "../graph/queries.ts";
 import type { GraphStore } from "../graph/store.ts";
+import { NodeLabel } from "../model/node-labels.ts";
 import { logger } from "../util/logger.ts";
 
 export type IndexProjectOptions = {
@@ -43,27 +46,32 @@ export async function indexProject(
   const files = await discoverApexFiles(projectRoot);
   logger.info({ fileCount: files.length }, "index-project: discovered files");
 
-  // Pass 1: structural nodes.
-  const forceReindex = opts.mode === "full";
-  const pass1 = runPass1(projectId, files, store, forceReindex);
-  logger.info(
-    { inserted: pass1.insertedFilesCount, parsed: pass1.parsedFilesCount },
-    "index-project: pass1 complete",
-  );
-
-  // Pass 2: intra-domain resolution (only if any files were actually re-parsed).
-  if (pass1.parsedFilesCount > 0 || opts.mode === "full") {
-    runPass2(projectId, pass1.allUnresolved, pass1.allInFileEdges, store);
+  const previous = store.db.query<{ file_path: string; content_hash: string }, [number]>(
+    "SELECT file_path, content_hash FROM file_hashes WHERE project_id = ?",
+  ).all(projectId);
+  const hashes = new Map(previous.map((f) => [f.file_path, f.content_hash]));
+  const changed = opts.mode === "full" || previous.length !== files.length ||
+    files.some((f) => hashes.get(f.relativePath) !== f.contentHash);
+  let filesParsed = 0;
+  let warnings: IndexProjectResult["warnings"] = [];
+  if (changed) {
+    // Prepare outside the write transaction; unexpected parser failures retain the old graph.
+    const prepared = new Map(files.map((file) => [file.relativePath, parseFile(file)]));
+    store.transaction(() => {
+      // Rebuild all references, including those from unchanged referrers and removed files.
+      store.clearProjectGraph(projectId);
+      const pass1 = runPass1(projectId, files, store, true, prepared);
+      filesParsed = pass1.parsedFilesCount;
+      warnings = pass1.warnings;
+      runPass2(projectId, pass1.allUnresolved, pass1.allInFileEdges, store);
+      const bundles = getAllNodesForProject(store, projectId).filter((n) => n.label === NodeLabel.UiBundle);
+      if (bundles.length) runPassTsResolve(projectId, store, bundles);
+      runPass3(projectId, [], store);
+      runPass4(projectId, store);
+      store.markProjectIndexed(projectId, Date.now());
+    });
   }
-
-  // Pass 3: cross-domain stub.
-  runPass3(projectId, [], store);
-
-  // Pass 4: reverse index.
-  runPass4(projectId, store);
-
   const now = Date.now();
-  store.markProjectIndexed(projectId, now);
 
   const nodeCounts = getNodeCounts(store, projectId);
   const edgeCounts = getEdgeCounts(store, projectId);
@@ -74,10 +82,10 @@ export async function indexProject(
   logger.info({ projectId, nodesWritten, edgesWritten, durationMs }, "index-project: complete");
 
   return {
-    filesParsed: pass1.parsedFilesCount,
+    filesParsed,
     nodesWritten,
     edgesWritten,
     durationMs,
-    warnings: pass1.warnings,
+    warnings,
   };
 }

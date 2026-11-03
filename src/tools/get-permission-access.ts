@@ -106,6 +106,10 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
 
   for (const row of grantRows) {
     const access = JSON.parse(row.edge_properties) as Record<string, unknown>;
+    const flags = target.type === "ApexClass" || target.type === "VisualforcePage" ? ["enabled"]
+      : target.type === "RecordType" ? ["visible"]
+      : target.type === "Field" ? ["read", "edit"] : ["create", "read", "edit", "delete", "viewAll", "modifyAll"];
+    if (!flags.some((flag) => access[flag] === true)) continue;
     const grant: Grant = {
       source_qualified_name: row.source_qname,
       source_label: row.source_label === NodeLabel.Profile ? "Profile" : "PermissionSet",
