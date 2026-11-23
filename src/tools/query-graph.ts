@@ -24,6 +24,9 @@ import { executeQuery } from "../graph/cypher/executor.ts";
 
 export const name = "query_graph";
 
+// Rows returned when the final RETURN has no LIMIT.
+export const DEFAULT_ROW_CAP = 1000;
+
 export const description =
   "Execute a Cypher-subset query against the indexed metadata graph. " +
   "Supports: MATCH and OPTIONAL MATCH with node patterns and directed relationship patterns, WITH chaining and AS aliases, " +
@@ -31,6 +34,7 @@ export const description =
   "RETURN (whole variables, property projections, grouped count(*)/count(n)), DISTINCT, ORDER BY, LIMIT, SKIP. " +
   "Not supported: UNWIND, variable-length paths (-[*..]-), " +
   "CREATE/MERGE/DELETE/SET (read-only graph), aggregates other than count, CALL subqueries. " +
+  `When the final RETURN has no LIMIT, at most ${DEFAULT_ROW_CAP} rows are returned and truncated is true if more rows exist; add LIMIT and SKIP to page, or RETURN count(*) to count. ` +
   "For unsupported syntax, use the typed tools: search_graph, trace_references, get_field_usage, get_permission_access.";
 
 export const inputSchema = {
@@ -63,6 +67,7 @@ type SuccessOutput = {
   columns: string[];
   rows: unknown[][];
   row_count: number;
+  truncated: boolean;
   query: string;
   warnings: string[];
 };
@@ -149,13 +154,20 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
 
   // Execute
   try {
-    const result = executeQuery(store, plan, parseResult.query, project_id);
+    const result = executeQuery(store, plan, parseResult.query, project_id, DEFAULT_ROW_CAP);
+    const warnings = [...result.warnings];
+    if (result.truncated) {
+      warnings.push(
+        `Result has only the first ${DEFAULT_ROW_CAP} rows. Add LIMIT and SKIP to page, or RETURN count(*) to count.`,
+      );
+    }
     const out: SuccessOutput = {
       columns: result.columns,
       rows: result.rows,
       row_count: result.rowCount,
+      truncated: result.truncated,
       query,
-      warnings: result.warnings,
+      warnings,
     };
     return out;
   } catch (err) {

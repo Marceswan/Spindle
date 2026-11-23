@@ -366,11 +366,15 @@ export type TraceParams = {
   edgeTypes?: EdgeType[] | undefined;
   depth?: number | undefined;
   minConfidence?: number | undefined;
+  /** Maximum number of nodes to return, start node included. Default: unlimited. */
+  limit?: number | undefined;
 };
 
 export type TraceResult = {
   nodes: StoredNode[];
   edges: StoredEdge[];
+  /** True when the node limit stopped the traversal and more nodes or edges existed. */
+  truncated: boolean;
 };
 
 type RawEdgeRow = {
@@ -411,6 +415,8 @@ function toStoredEdge(row: RawEdgeRow): StoredEdge {
 export function traceReferences(store: GraphStore, params: TraceParams): TraceResult {
   const maxDepth = Math.min(params.depth ?? 2, 5);
   const minConf = params.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
+  const limit = params.limit ?? Number.POSITIVE_INFINITY;
+  let truncated = false;
 
   // Find start node.
   let startNode: StoredNode | null = null;
@@ -428,7 +434,7 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
   }
 
   if (startNode === null) {
-    return { nodes: [], edges: [] };
+    return { nodes: [], edges: [], truncated: false };
   }
 
   const visitedNodeIds = new Set<number>();
@@ -463,6 +469,7 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
                  confidence, properties, source_file, source_line
           FROM edges
           WHERE ${idColumn} = ? AND project_id = ? AND confidence >= ? ${edgeTypePlaceholders}
+          ORDER BY id
         `;
         const bindArgs: (number | string)[] = [nodeId, params.projectId, minConf, ...edgeTypeValues];
 
@@ -471,24 +478,31 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
         for (const eRow of edgeRows) {
           if (visitedEdgeIds.has(eRow.id)) continue;
           visitedEdgeIds.add(eRow.id);
-          resultEdges.push(toStoredEdge(eRow));
 
           const neighborId: number = eRow[otherColumn as keyof typeof eRow] as number;
           if (!visitedNodeIds.has(neighborId)) {
+            if (resultNodes.length >= limit) {
+              // A node beyond the limit exists; its edge is dropped.
+              truncated = true;
+              continue;
+            }
             visitedNodeIds.add(neighborId);
             const neighborNode = getNodeById(store, neighborId);
             if (neighborNode !== null) {
               resultNodes.push(neighborNode);
               nextFrontier.push(neighborId);
+            } else {
+              continue;
             }
           }
+          resultEdges.push(toStoredEdge(eRow));
         }
       }
     }
 
     frontier = nextFrontier;
-    if (frontier.length === 0) break;
+    if (frontier.length === 0 || truncated) break;
   }
 
-  return { nodes: resultNodes, edges: resultEdges };
+  return { nodes: resultNodes, edges: resultEdges, truncated };
 }

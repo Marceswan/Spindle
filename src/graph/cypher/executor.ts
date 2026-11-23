@@ -9,6 +9,7 @@ export type QueryResult = {
   rows: unknown[][];
   rowCount: number;
   warnings: string[];
+  truncated: boolean;
 };
 
 // Parse a JSON node blob returned by json_object(...) back into a StoredNode shape.
@@ -80,6 +81,7 @@ export function executeQuery(
   plan: SqlPlan,
   query: CypherQuery,
   projectId: number,
+  maxRows?: number,
 ): QueryResult {
   const warnings: string[] = [];
 
@@ -102,7 +104,16 @@ export function executeQuery(
   const columnKinds = plan.columnKinds;
 
   type RawRow = Record<string, unknown>;
-  const rawRows = store.db.query<RawRow, (string | number | null)[]>(plan.sql).all(...params);
+  // Cap only when the final RETURN has no LIMIT. Ask SQLite for one extra row
+  // to detect truncation exactly. query.limit is the final clause's limit.
+  const capped = maxRows !== undefined && query.limit === undefined;
+  const sql = capped ? `${plan.sql} LIMIT ${maxRows + 1}` : plan.sql;
+  const rawRows = store.db.query<RawRow, (string | number | null)[]>(sql).all(...params);
+  let truncated = false;
+  if (capped && rawRows.length > maxRows) {
+    truncated = true;
+    rawRows.length = maxRows;
+  }
 
   const resultRows: unknown[][] = [];
   for (const raw of rawRows) {
@@ -123,5 +134,6 @@ export function executeQuery(
     rows: resultRows,
     rowCount: resultRows.length,
     warnings,
+    truncated,
   };
 }
