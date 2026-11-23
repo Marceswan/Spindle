@@ -3,10 +3,10 @@
 // the node so SOQL/DML edges from Apex resolve to a real node rather than the parser-emitted
 // placeholder.
 
-import { XMLParser } from "fast-xml-parser";
 
 import { NodeLabel } from "../../model/node-labels.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
 type CustomObjectXml = {
   CustomObject?: {
@@ -16,19 +16,14 @@ type CustomObjectXml = {
     sharingModel?: string;
     deploymentStatus?: string;
     nameField?: { type?: string; label?: string };
-    enableActivities?: boolean;
-    enableHistory?: boolean;
-    enableReports?: boolean;
-    enableSearch?: boolean;
+    enableActivities?: string;
+    enableHistory?: string;
+    enableReports?: string;
+    enableSearch?: string;
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-});
+const xmlParser = createXmlParser();
 
 export function parseObjectMeta(filePath: string, source: string, objectName: string): ParseResult {
   const result: ParseResult = { nodes: [], edges: [], unresolved: [], warnings: [] };
@@ -53,16 +48,16 @@ export function parseObjectMeta(filePath: string, source: string, objectName: st
     startLine: 1,
     endLine: source.split("\n").length,
     properties: {
-      label: co.label ?? objectName,
-      pluralLabel: co.pluralLabel ?? null,
-      description: co.description ?? null,
-      sharingModel: co.sharingModel ?? null,
-      deploymentStatus: co.deploymentStatus ?? null,
-      nameFieldType: co.nameField?.type ?? null,
-      enableActivities: co.enableActivities ?? null,
-      enableHistory: co.enableHistory ?? null,
-      enableReports: co.enableReports ?? null,
-      enableSearch: co.enableSearch ?? null,
+      label: xmlText(co.label) ?? objectName,
+      pluralLabel: xmlText(co.pluralLabel) ?? null,
+      description: xmlText(co.description) ?? null,
+      sharingModel: xmlText(co.sharingModel) ?? null,
+      deploymentStatus: xmlText(co.deploymentStatus) ?? null,
+      nameFieldType: xmlText(co.nameField?.type) ?? null,
+      enableActivities: xmlBool(co.enableActivities) ?? null,
+      enableHistory: xmlBool(co.enableHistory) ?? null,
+      enableReports: xmlBool(co.enableReports) ?? null,
+      enableSearch: xmlBool(co.enableSearch) ?? null,
       isCustom: objectName.endsWith("__c") || objectName.endsWith("__mdt"),
       isCustomMetadataType: objectName.endsWith("__mdt"),
       isPlaceholder: false,

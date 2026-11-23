@@ -2,12 +2,12 @@
 // to each member PermissionSet. Per design §6.8.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlText } from "./xml.ts";
 
 type PermSetGroupXml = {
   PermissionSetGroup?: {
@@ -17,10 +17,7 @@ type PermSetGroupXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) => name === "permissionSets",
 });
 
@@ -50,8 +47,8 @@ export function parsePermissionSetGroup(filePath: string, source: string): Parse
     startLine: 1,
     endLine: source.split("\n").length,
     properties: {
-      description: group.description ?? null,
-      status: group.status ?? null,
+      description: xmlText(group.description) ?? null,
+      status: xmlText(group.status) ?? null,
     },
   });
 

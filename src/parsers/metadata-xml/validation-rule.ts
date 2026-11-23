@@ -3,7 +3,6 @@
 // design §6.7. v0.2 uses a simple token walker; full formula AST is a v2+ improvement.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
@@ -11,11 +10,12 @@ import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
 
 import { extractFormulaFieldReferences } from "./formula.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
 type ValidationRuleXml = {
   ValidationRule?: {
     fullName?: string;
-    active?: boolean;
+    active?: string;
     description?: string;
     errorConditionFormula?: string;
     errorDisplayField?: string;
@@ -23,12 +23,7 @@ type ValidationRuleXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-});
+const xmlParser = createXmlParser();
 
 export function parseValidationRuleMeta(
   filePath: string,
@@ -49,8 +44,9 @@ export function parseValidationRuleMeta(
   }
 
   const vr = parsed.ValidationRule ?? {};
-  const ruleName = vr.fullName ?? basename(filePath, ".validationRule-meta.xml");
+  const ruleName = xmlText(vr.fullName) ?? basename(filePath, ".validationRule-meta.xml");
   const qualifiedName = `${parentSObject}.${ruleName}`;
+  const formula = xmlText(vr.errorConditionFormula);
 
   result.nodes.push({
     label: NodeLabel.ValidationRule,
@@ -60,16 +56,16 @@ export function parseValidationRuleMeta(
     endLine: source.split("\n").length,
     properties: {
       parentSObject,
-      active: vr.active ?? true,
-      description: vr.description ?? null,
-      errorDisplayField: vr.errorDisplayField ?? null,
-      errorMessage: vr.errorMessage ?? null,
-      formula: vr.errorConditionFormula ?? null,
+      active: xmlBool(vr.active) ?? true,
+      description: xmlText(vr.description) ?? null,
+      errorDisplayField: xmlText(vr.errorDisplayField) ?? null,
+      errorMessage: xmlText(vr.errorMessage) ?? null,
+      formula: formula ?? null,
     },
   });
 
-  if (vr.errorConditionFormula !== undefined && vr.errorConditionFormula !== null) {
-    const refs = extractFormulaFieldReferences(vr.errorConditionFormula, parentSObject);
+  if (formula !== undefined) {
+    const refs = extractFormulaFieldReferences(formula, parentSObject);
     for (const ref of refs) {
       result.edges.push({
         edgeType: EdgeType.ValidationReferencesField,

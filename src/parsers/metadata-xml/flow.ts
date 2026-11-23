@@ -2,13 +2,13 @@
 // screen/choice-specific field declarations and dynamic resource evaluation are not resolved.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { extractFormulaFieldReferences } from "./formula.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlNumber, xmlText } from "./xml.ts";
 
 type ActionCall = {
   name?: string;
@@ -21,7 +21,7 @@ type RecordOp = {
   object?: string;
   inputReference?: string;
   outputReference?: string;
-  storeOutputAutomatically?: boolean;
+  storeOutputAutomatically?: string;
 };
 
 type Subflow = {
@@ -37,7 +37,7 @@ type FlowStart = {
 
 type FlowXml = {
   Flow?: {
-    apiVersion?: number;
+    apiVersion?: string;
     processType?: string;
     status?: string;
     label?: string;
@@ -53,10 +53,7 @@ type FlowXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) =>
     name === "actionCalls" ||
     name === "recordCreates" ||
@@ -93,39 +90,42 @@ export function parseFlow(filePath: string, source: string): ParseResult {
     startLine: 1,
     endLine: totalLines,
     properties: {
-      apiVersion: flow.apiVersion ?? null,
-      processType: flow.processType ?? null,
-      status: flow.status ?? null,
-      label: flow.label ?? flowName,
-      triggerType: flow.start?.triggerType ?? null,
-      triggerObject: flow.start?.object ?? null,
-      recordTriggerType: flow.start?.recordTriggerType ?? null,
+      apiVersion: xmlNumber(flow.apiVersion),
+      processType: xmlText(flow.processType) ?? null,
+      status: xmlText(flow.status) ?? null,
+      label: xmlText(flow.label) ?? flowName,
+      triggerType: xmlText(flow.start?.triggerType) ?? null,
+      triggerObject: xmlText(flow.start?.object) ?? null,
+      recordTriggerType: xmlText(flow.start?.recordTriggerType) ?? null,
     },
   });
 
   // If the flow is record-triggered, emit a TRIGGERS_ON-style edge so this Flow shows up
   // when asking "what fires when X is updated". We reuse FLOW_DML_ON with operation="trigger"
   // to keep the edge type set small — alternative would be a dedicated FLOW_TRIGGERED_ON.
-  if (flow.start?.object !== undefined && flow.start?.triggerType !== undefined) {
+  const startObject = xmlText(flow.start?.object);
+  const startTriggerType = xmlText(flow.start?.triggerType);
+  if (startObject !== undefined && startTriggerType !== undefined) {
     result.edges.push({
       edgeType: EdgeType.FlowDmlOn,
       fromQName: flowName,
       fromLabel: NodeLabel.Flow,
-      toQName: flow.start.object,
+      toQName: startObject,
       toLabel: NodeLabel.SObject,
       confidence: Confidence.Resolved,
       properties: {
         operation: "trigger",
-        triggerType: flow.start.triggerType,
-        recordTriggerType: flow.start.recordTriggerType ?? null,
+        triggerType: startTriggerType,
+        recordTriggerType: xmlText(flow.start?.recordTriggerType) ?? null,
       },
     });
   }
 
   // actionCalls -> INVOCABLE_FROM_FLOW
   for (const ac of asArray(flow.actionCalls)) {
-    if (ac.actionType !== "apex") continue;
-    if (ac.actionName === undefined) continue;
+    if (xmlText(ac.actionType) !== "apex") continue;
+    const actionName = xmlText(ac.actionName);
+    if (actionName === undefined) continue;
     // actionName is the Apex class name (the @InvocableMethod-bearing class). We don't know
     // the method's parameter list from the Flow alone; pass2's short-name fallback resolves
     // to the @InvocableMethod-annotated method when one matches.
@@ -133,25 +133,30 @@ export function parseFlow(filePath: string, source: string): ParseResult {
       edgeType: EdgeType.InvocableFromFlow,
       fromQName: flowName,
       fromLabel: NodeLabel.Flow,
-      toQName: ac.actionName,
+      toQName: actionName,
       toLabel: NodeLabel.ApexClass,
       confidence: Confidence.Heuristic,
-      properties: { actionName: ac.actionName, flowElementName: ac.name ?? null },
+      properties: { actionName, flowElementName: xmlText(ac.name) ?? null },
     });
   }
 
   const bindings = new Map<string, string>();
   for (const variable of asArray(flow.variables)) {
-    if (variable.name && variable.objectType) bindings.set(variable.name, variable.objectType);
+    const varName = xmlText(variable.name);
+    const varType = xmlText(variable.objectType);
+    if (varName && varType) bindings.set(varName, varType);
   }
-  if (flow.start?.object) {
-    bindings.set("$Record", flow.start.object);
-    bindings.set("$Record__Prior", flow.start.object);
+  if (startObject) {
+    bindings.set("$Record", startObject);
+    bindings.set("$Record__Prior", startObject);
   }
   for (const lookup of asArray(flow.recordLookups)) {
-    if (!lookup.object) continue;
-    if (lookup.name && lookup.storeOutputAutomatically === true) bindings.set(lookup.name, lookup.object);
-    if (lookup.outputReference) bindings.set(lookup.outputReference, lookup.object);
+    const lookupObject = xmlText(lookup.object);
+    if (!lookupObject) continue;
+    const lookupName = xmlText(lookup.name);
+    const outputReference = xmlText(lookup.outputReference);
+    if (lookupName && xmlBool(lookup.storeOutputAutomatically) === true) bindings.set(lookupName, lookupObject);
+    if (outputReference) bindings.set(outputReference, lookupObject);
   }
   extractFields(result, flowName, flow, bindings);
 
@@ -163,15 +168,16 @@ export function parseFlow(filePath: string, source: string): ParseResult {
 
   // subflows -> FLOW_INVOKES_FLOW
   for (const sf of asArray(flow.subflows)) {
-    if (sf.flowName === undefined) continue;
+    const subflowName = xmlText(sf.flowName);
+    if (subflowName === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.FlowInvokesFlow,
       fromQName: flowName,
       fromLabel: NodeLabel.Flow,
-      toQName: sf.flowName,
+      toQName: subflowName,
       toLabel: NodeLabel.Flow,
       confidence: Confidence.Resolved,
-      properties: { subflowElementName: sf.name ?? null },
+      properties: { subflowElementName: xmlText(sf.name) ?? null },
     });
   }
 
@@ -185,7 +191,7 @@ function emitFlowDml(
   operation: "insert" | "update" | "delete" | "select",
   bindings: Map<string, string>,
 ): void {
-  const object = op.object ?? bindings.get(op.inputReference ?? "");
+  const object = xmlText(op.object) ?? bindings.get(xmlText(op.inputReference) ?? "");
   if (object === undefined) return;
   result.edges.push({
     edgeType: EdgeType.FlowDmlOn,
@@ -194,13 +200,22 @@ function emitFlowDml(
     toQName: object,
     toLabel: NodeLabel.SObject,
     confidence: Confidence.Resolved,
-    properties: { operation, flowElementName: op.name ?? null },
+    properties: { operation, flowElementName: xmlText(op.name) ?? null },
   });
 }
 
 function asArray<T>(v: T | T[] | undefined): T[] {
   if (v === undefined) return [];
   return Array.isArray(v) ? v : [v];
+}
+
+// Text values are never converted, so a literal such as `001`, `1.5`, `1e3`, `0x1F` or `true`
+// reaches the walk as a string. No flow resource or field API name starts with a digit or sign,
+// and `true`/`false` are not references, so literals are never taken for field references.
+const LITERAL_VALUE = /^(?:[+-]?(?:\d|\.\d)|true$|false$)/;
+
+function isLiteral(value: string): boolean {
+  return LITERAL_VALUE.test(value.trim());
 }
 
 function extractFields(
@@ -231,6 +246,7 @@ function extractFields(
   };
   const resolve = (value: string, element: string, context: string, formula = false): void => {
     const ref = value.trim().replace(/^\{!\s*|\s*\}$/g, "");
+    if (isLiteral(ref)) return;
     if (!ref.includes(".")) return; // Scalar resources and record variables aren't fields.
     const parts = ref.split(".");
     const object = bindings.get(parts[0] ?? "");
@@ -249,6 +265,7 @@ function extractFields(
     for (const [key, child] of Object.entries(value)) {
       if (typeof child === "string" && referenceKeys.has(key)) resolve(child, element, context);
       else if (key === "expression" && typeof child === "string") {
+        if (isLiteral(child)) continue;
         // The shared formula walker is intentionally conservative. Remove literal strings
         // and comments first; only dotted resources with explicit record bindings qualify.
         const expression = child.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\//g, " ");
@@ -257,7 +274,7 @@ function extractFields(
         }
       } else if (object && (key === "field" || key === "queriedFields" || key === "sortField")) {
         for (const field of asArray(child)) {
-          if (typeof field !== "string") continue;
+          if (typeof field !== "string" || isLiteral(field)) continue;
           if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) emit(`${object}.${field}`, element, context, false);
           else warn(`${object}.${field}`);
         }

@@ -3,28 +3,23 @@
 // (that lands when we model picklist values as first-class nodes, post-v1).
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { NodeLabel } from "../../model/node-labels.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
 type RecordTypeXml = {
   RecordType?: {
     fullName?: string;
     label?: string;
-    active?: boolean;
+    active?: string;
     description?: string;
     businessProcess?: string;
     picklistValues?: unknown;
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-});
+const xmlParser = createXmlParser();
 
 export function parseRecordTypeMeta(
   filePath: string,
@@ -45,7 +40,7 @@ export function parseRecordTypeMeta(
   }
 
   const rt = parsed.RecordType ?? {};
-  const rtName = rt.fullName ?? basename(filePath, ".recordType-meta.xml");
+  const rtName = xmlText(rt.fullName) ?? basename(filePath, ".recordType-meta.xml");
   const qualifiedName = `${parentSObject}.${rtName}`;
 
   result.nodes.push({
@@ -56,10 +51,10 @@ export function parseRecordTypeMeta(
     endLine: source.split("\n").length,
     properties: {
       parentSObject,
-      label: rt.label ?? rtName,
-      active: rt.active ?? true,
-      description: rt.description ?? null,
-      businessProcess: rt.businessProcess ?? null,
+      label: xmlText(rt.label) ?? rtName,
+      active: xmlBool(rt.active) ?? true,
+      description: xmlText(rt.description) ?? null,
+      businessProcess: xmlText(rt.businessProcess) ?? null,
     },
   });
 
