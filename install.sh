@@ -27,11 +27,6 @@ elif command -v gh >/dev/null 2>&1; then
     auth_token="$(gh auth token 2>/dev/null || true)"
 fi
 
-auth_arg=""
-if [ -n "$auth_token" ]; then
-    auth_arg="-H Authorization: Bearer $auth_token"
-fi
-
 # ---------- Detect platform ----------
 
 uname_s="$(uname -s)"
@@ -90,7 +85,6 @@ else
     echo "Spindle: need curl or wget to download release. Install one and rerun." >&2
     exit 1
 fi
-unset auth_arg
 
 manifest="$(fetch "$release_url")" || {
     echo "Spindle: failed to fetch release manifest. Repo or tag may not exist yet." >&2
@@ -185,20 +179,22 @@ if [ -n "$sums_url" ] || [ "${sums_via_gh:-0}" = "1" ]; then
         exit 1
     fi
 
+    actual=""
     if command -v shasum >/dev/null 2>&1; then
         actual="$(shasum -a 256 "$download_path" | awk '{print $1}')"
     elif command -v sha256sum >/dev/null 2>&1; then
         actual="$(sha256sum "$download_path" | awk '{print $1}')"
-    else
-        echo "Spindle: no shasum or sha256sum available; skipping verification." >&2
-        actual="$expected"
     fi
 
-    if [ "$expected" != "$actual" ]; then
+    if [ -z "$actual" ]; then
+        # Do not report a check that did not run.
+        echo "Spindle: WARNING - no shasum or sha256sum available. The checksum was NOT verified." >&2
+    elif [ "$expected" != "$actual" ]; then
         echo "Spindle: SHA256 mismatch. Expected $expected, got $actual. Aborting." >&2
         exit 1
+    else
+        echo "Spindle: checksum verified"
     fi
-    echo "Spindle: checksum verified"
 else
     echo "Spindle: WARNING - no SHA256SUMS file in release. Skipping checksum verification."
 fi

@@ -79,6 +79,16 @@ class Parser {
     return t.kind === TokenKind.Ident && t.text.toUpperCase() === name.toUpperCase();
   }
 
+  // A label, edge type or property name can be spelled like a keyword: the CONTAINS edge
+  // type, or a property named `count`. After ':' or '.' the grammar permits only a name,
+  // so a keyword token in that position is a name.
+  private checkName(): boolean {
+    const t = this.peek();
+    if (t.kind === TokenKind.Ident) return true;
+    if (t.kind === TokenKind.StringLit || t.kind === TokenKind.NumberLit) return false;
+    return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(t.text);
+  }
+
   // Consume a token if it matches, else return null.
   private tryConsume(kind: TokenKind): Token | null {
     if (this.check(kind)) return this.advance();
@@ -190,7 +200,7 @@ class Parser {
     if (this.check(TokenKind.Colon)) {
       this.advance();
       const typeTok = this.peek();
-      if (typeTok.kind !== TokenKind.Ident) {
+      if (!this.checkName()) {
         throw new ParseFailure(
           `Expected edge type identifier after ':' in relationship pattern`,
           typeTok.column,
@@ -239,7 +249,7 @@ class Parser {
     if (!this.check(TokenKind.Colon)) return undefined;
     this.advance();
     const t = this.peek();
-    if (t.kind !== TokenKind.Ident) {
+    if (!this.checkName()) {
       throw new ParseFailure(`Expected label name after ':'`, t.column);
     }
     return this.advance().text;
@@ -344,7 +354,7 @@ class Parser {
     this.advance();
     if (!this.tryConsume(TokenKind.Dot)) return { kind: "prop", variable: varTok.text, property: "" };
     const propTok = this.peek();
-    if (propTok.kind !== TokenKind.Ident) {
+    if (!this.checkName()) {
       throw new ParseFailure(
         `Expected property name after '.', got '${propTok.text}'`,
         propTok.column,
@@ -452,7 +462,7 @@ class Parser {
     if (this.check(TokenKind.Dot)) {
       this.advance();
       const propTok = this.peek();
-      if (propTok.kind !== TokenKind.Ident) {
+      if (!this.checkName()) {
         throw new ParseFailure(
           `Expected property name after '.' in return clause`,
           propTok.column,

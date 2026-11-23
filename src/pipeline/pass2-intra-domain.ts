@@ -22,25 +22,46 @@ export type Pass2Diagnostics = {
 
 type SymbolTable = {
   classByShortName: Map<string, StoredNode>;
+  // Short names that more than one class has (inner classes such as Wrapper or Request).
+  ambiguousClassNames: Set<string>;
+  classByQName: Map<string, StoredNode>;
   interfaceByShortName: Map<string, StoredNode>;
   methodByQName: Map<string, StoredNode>;
   methodsByClassAndName: Map<string, StoredNode[]>;
   nodeByLabelAndQName: Map<string, StoredNode>;
+  // SObject and Field nodes by lower-case qualified name: API names ignore case.
+  objectOrFieldByLowerQName: Map<string, StoredNode>;
 };
+
+const isPlaceholderNode = (node: StoredNode): boolean => node.properties?.["isPlaceholder"] === true;
 
 function buildSymbolTable(nodes: StoredNode[]): SymbolTable {
   const classByShortName = new Map<string, StoredNode>();
+  const classByQName = new Map<string, StoredNode>();
+  const ambiguousClassNames = new Set<string>();
   const interfaceByShortName = new Map<string, StoredNode>();
   const methodByQName = new Map<string, StoredNode>();
   const methodsByClassAndName = new Map<string, StoredNode[]>();
   const nodeByLabelAndQName = new Map<string, StoredNode>();
+  const objectOrFieldByLowerQName = new Map<string, StoredNode>();
 
   for (const node of nodes) {
     const key = `${node.label}::${node.qualifiedName}`;
     nodeByLabelAndQName.set(key, node);
+    if (node.label === NodeLabel.SObject || node.label === NodeLabel.Field) {
+      const lowerKey = key.toLowerCase();
+      const existing = objectOrFieldByLowerQName.get(lowerKey);
+      // A real node wins over a placeholder.
+      if (existing === undefined || (isPlaceholderNode(existing) && !isPlaceholderNode(node))) {
+        objectOrFieldByLowerQName.set(lowerKey, node);
+      }
+    }
 
     if (node.label === NodeLabel.ApexClass) {
-      classByShortName.set(node.name.toLowerCase(), node);
+      const shortName = node.name.toLowerCase();
+      if (classByShortName.has(shortName)) ambiguousClassNames.add(shortName);
+      classByShortName.set(shortName, node);
+      classByQName.set(node.qualifiedName.toLowerCase(), node);
     } else if (node.label === NodeLabel.ApexInterface) {
       interfaceByShortName.set(node.name.toLowerCase(), node);
     } else if (node.label === NodeLabel.ApexMethod) {
@@ -56,7 +77,7 @@ function buildSymbolTable(nodes: StoredNode[]): SymbolTable {
     }
   }
 
-  return { classByShortName, interfaceByShortName, methodByQName, methodsByClassAndName, nodeByLabelAndQName };
+  return { classByShortName, ambiguousClassNames, classByQName, interfaceByShortName, methodByQName, methodsByClassAndName, nodeByLabelAndQName, objectOrFieldByLowerQName };
 }
 
 function getArgCount(qname: string): number {
@@ -76,9 +97,42 @@ function pickBestOverload(overloads: StoredNode[], argCount: number): { node: St
   return { node: overloads[0] as StoredNode, confidence: Confidence.Ambiguous };
 }
 
+// The class that contains a method or trigger body: the qualified name without the
+// signature and without the last part.
+function enclosingClassOf(siteQName: string): string {
+  const parenIdx = siteQName.indexOf("(");
+  const withoutSig = parenIdx !== -1 ? siteQName.slice(0, parenIdx) : siteQName;
+  const dotIdx = withoutSig.lastIndexOf(".");
+  return dotIdx !== -1 ? withoutSig.slice(0, dotIdx) : withoutSig;
+}
+
+// Resolves a class name as Apex does: first as a member of each enclosing class, from the
+// innermost outward, then as a qualified name. A bare short name is the last choice, and
+// only when exactly one class has it; a guess between two classes gives a wrong edge.
+function resolveClass(sym: SymbolTable, name: string, enclosingClass: string): StoredNode | undefined {
+  const lower = name.toLowerCase();
+  let scope = enclosingClass.toLowerCase();
+  while (scope !== "") {
+    const member = sym.classByQName.get(`${scope}.${lower}`);
+    if (member !== undefined) return member;
+    const dotIdx = scope.lastIndexOf(".");
+    scope = dotIdx === -1 ? "" : scope.slice(0, dotIdx);
+  }
+  const qualified = sym.classByQName.get(lower);
+  if (qualified !== undefined) return qualified;
+  return sym.ambiguousClassNames.has(lower) ? undefined : sym.classByShortName.get(lower);
+}
+
+// A call or instantiation site is a method, or the trigger itself for a trigger body.
+function callSite(sym: SymbolTable, qname: string): StoredNode | undefined {
+  return sym.methodByQName.get(qname) ?? sym.nodeByLabelAndQName.get(`${NodeLabel.ApexTrigger}::${qname}`);
+}
+
 type EdgeRecord = {
   sourceId: number;
   targetId: number;
+  // Set for a target that a placeholder stands for: its id is known only after the write.
+  targetNode?: StoredNode | undefined;
   edgeType: (typeof EdgeType)[keyof typeof EdgeType];
   confidence: number;
   sourceFile?: string | undefined;
@@ -136,12 +190,42 @@ function soqlResolver(nodes: StoredNode[]): (edge: ParsedEdge) => StoredNode | u
   };
 }
 
+const API_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// The qualified name of the placeholder that an unresolved edge target may get, or null.
+// Regex-tier edges (Visualforce bindings, validation formulas, FlexiPage component properties,
+// email merge fields) never create a placeholder: their token scans also match text that is
+// not a field, and a placeholder for it would add a false node. Only edges at Heuristic
+// confidence or higher do, and only for an SObject or a Field target.
+function placeholderQName(e: ParsedEdge): string | null {
+  if (e.toLabel !== NodeLabel.SObject && e.toLabel !== NodeLabel.Field) return null;
+  if (e.confidence < Confidence.Heuristic) return null;
+  let qname = e.toQName;
+  const objectPath = e.properties?.["soqlObjectPath"];
+  if (objectPath !== undefined) {
+    // A SOQL edge: a relationship or a child path needs relationship metadata that is not here.
+    if (!Array.isArray(objectPath) || objectPath.length !== 1 || typeof objectPath[0] !== "string") return null;
+    if (e.toLabel === NodeLabel.SObject) {
+      qname = objectPath[0];
+    } else {
+      const fieldPath = e.properties?.["soqlFieldPath"];
+      if (typeof fieldPath !== "string" || fieldPath.includes(".")) return null;
+      qname = `${objectPath[0]}.${fieldPath}`;
+    }
+  }
+  const parts = qname.split(".");
+  if (e.toLabel === NodeLabel.SObject ? parts.length !== 1 : parts.length !== 2) return null;
+  return parts.every((part) => API_NAME.test(part)) ? qname : null;
+}
+
 export function runPass2(
   projectId: number,
   unresolved: UnresolvedRef[],
   inFileEdges: ParsedEdge[],
   store: GraphStore,
 ): Pass2Diagnostics {
+  // One node per API name, whatever the spelling, before the symbol table is built.
+  store.mergeCaseVariantPlaceholders(projectId);
   const allNodes = getAllNodesForProject(store, projectId);
   const sym = buildSymbolTable(allNodes);
   const resolveSoql = soqlResolver(allNodes);
@@ -149,6 +233,8 @@ export function runPass2(
   let resolvedCount = 0;
   let unresolvedCount = 0;
   const edgesToInsert: EdgeRecord[] = [];
+  // Placeholders made in this run. Their ids are set in the write transaction below.
+  const newPlaceholders: StoredNode[] = [];
 
   // Write in-file structural edges. For some cross-domain edges (LWC→Apex, etc.) the parser
   // emits a target qname in short form ("AccountService.cleanup") because the source format
@@ -158,6 +244,34 @@ export function runPass2(
     const toKey = `${e.toLabel}::${e.toQName}`;
     const fromNode = sym.nodeByLabelAndQName.get(fromKey);
     let toNode = e.properties?.["soqlObjectPath"] ? resolveSoql(e) : sym.nodeByLabelAndQName.get(toKey);
+
+    // SObject and Field targets: API names ignore case, and a target that no node stands for
+    // may get a placeholder. A SOQL edge that needs relationship metadata is not looked up by
+    // its toQName: only the resolver may follow a relationship.
+    if (toNode === undefined && (e.toLabel === NodeLabel.SObject || e.toLabel === NodeLabel.Field)) {
+      const qname = placeholderQName(e);
+      const lookupName = qname ?? (e.properties?.["soqlObjectPath"] === undefined ? e.toQName : null);
+      const lowerKey = lookupName === null ? "" : `${e.toLabel}::${lookupName}`.toLowerCase();
+      if (lookupName !== null) toNode = sym.objectOrFieldByLowerQName.get(lowerKey);
+      if (toNode === undefined && qname !== null && fromNode !== undefined) {
+        const parts = qname.split(".");
+        toNode = {
+          id: -1,
+          projectId,
+          label: e.toLabel,
+          name: parts[parts.length - 1] as string,
+          qualifiedName: qname,
+          filePath: null,
+          startLine: null,
+          endLine: null,
+          properties: e.toLabel === NodeLabel.Field ? { isPlaceholder: true, parentSObject: parts[0] } : { isPlaceholder: true },
+          contentHash: null,
+        };
+        sym.nodeByLabelAndQName.set(`${e.toLabel}::${qname}`, toNode);
+        sym.objectOrFieldByLowerQName.set(lowerKey, toNode);
+        newPlaceholders.push(toNode);
+      }
+    }
 
     // Short-name fallback for ApexMethod targets (LWC@salesforce/apex imports, etc.).
     if (toNode === undefined && e.toLabel === NodeLabel.ApexMethod) {
@@ -181,6 +295,7 @@ export function runPass2(
     const rec: EdgeRecord = {
       sourceId: fromNode.id,
       targetId: toNode.id,
+      targetNode: toNode,
       edgeType: e.edgeType,
       confidence: e.confidence,
     };
@@ -193,7 +308,7 @@ export function runPass2(
   // Resolve cross-file refs.
   for (const ref of unresolved) {
     if (ref.kind === "extends") {
-      const parentClass = sym.classByShortName.get(ref.parentName.toLowerCase());
+      const parentClass = resolveClass(sym, ref.parentName, ref.classQName);
       const parentIface = sym.interfaceByShortName.get(ref.parentName.toLowerCase());
       const fromKey = `${NodeLabel.ApexClass}::${ref.classQName}`;
       const fromIfaceKey = `${NodeLabel.ApexInterface}::${ref.classQName}`;
@@ -220,8 +335,8 @@ export function runPass2(
       resolvedCount++;
 
     } else if (ref.kind === "new") {
-      const targetClass = sym.classByShortName.get(ref.typeName.toLowerCase());
-      const fromNode = sym.methodByQName.get(ref.fromMethodQName);
+      const targetClass = resolveClass(sym, ref.typeName, enclosingClassOf(ref.fromMethodQName));
+      const fromNode = callSite(sym, ref.fromMethodQName);
       if (fromNode === undefined || targetClass === undefined) {
         logger.debug({ from: ref.fromMethodQName, typeName: ref.typeName }, "pass2: instantiation unresolved");
         unresolvedCount++;
@@ -232,26 +347,24 @@ export function runPass2(
       resolvedCount++;
 
     } else if (ref.kind === "call") {
-      const fromNode = sym.methodByQName.get(ref.fromMethodQName);
+      const fromNode = callSite(sym, ref.fromMethodQName);
       if (fromNode === undefined) { unresolvedCount++; continue; }
 
       let resolved: { node: StoredNode; confidence: number } | null = null;
 
-      if (ref.receiverText === null) {
-        const parenIdx = ref.fromMethodQName.indexOf("(");
-        const withoutSig = parenIdx !== -1 ? ref.fromMethodQName.slice(0, parenIdx) : ref.fromMethodQName;
-        const dotIdx = withoutSig.lastIndexOf(".");
-        const enclosingClass = dotIdx !== -1 ? withoutSig.slice(0, dotIdx) : withoutSig;
+      // `this.foo()` calls a method of the enclosing class, the same as `foo()`.
+      if (ref.receiverText === null || ref.receiverText.toLowerCase() === "this") {
+        const enclosingClass = enclosingClassOf(ref.fromMethodQName);
         const lookupKey = `${enclosingClass}.${ref.calleeName}`.toLowerCase();
         const overloads = sym.methodsByClassAndName.get(lookupKey);
         if (overloads !== undefined && overloads.length > 0) {
           resolved = pickBestOverload(overloads, ref.argCount);
         }
       } else {
-        const receiverLower = ref.receiverText.toLowerCase();
-        const staticClass = sym.classByShortName.get(receiverLower);
+        const staticClass = resolveClass(sym, ref.receiverText, enclosingClassOf(ref.fromMethodQName));
         if (staticClass !== undefined) {
-          const lookupKey = `${staticClass.name}.${ref.calleeName}`.toLowerCase();
+          // Methods are keyed by the qualified class name; an inner class has more than one part.
+          const lookupKey = `${staticClass.qualifiedName}.${ref.calleeName}`.toLowerCase();
           const overloads = sym.methodsByClassAndName.get(lookupKey);
           if (overloads !== undefined && overloads.length > 0) {
             resolved = pickBestOverload(overloads, ref.argCount);
@@ -274,12 +387,21 @@ export function runPass2(
 
   if (edgesToInsert.length > 0) {
     store.transaction(() => {
+      for (const node of newPlaceholders) {
+        node.id = store.ensurePlaceholderNode({
+          projectId,
+          label: node.label,
+          name: node.name,
+          qualifiedName: node.qualifiedName,
+          properties: node.properties,
+        });
+      }
       for (const e of edgesToInsert) {
         try {
           store.insertEdge({
             projectId,
             sourceId: e.sourceId,
-            targetId: e.targetId,
+            targetId: e.targetNode?.id ?? e.targetId,
             edgeType: e.edgeType,
             confidence: e.confidence,
             ...(e.sourceFile !== undefined ? { sourceFile: e.sourceFile } : {}),

@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -100,13 +101,16 @@ function serialize(settings: Settings): string {
 
 function writeAtomically(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
+  // settings.json can be a symlink into a dotfiles repository. A rename onto the link
+  // replaces the link with a regular file, so write to the file that the link points to.
+  const target = existsSync(path) ? realpathSync(path) : path;
   let mode = 0o644;
-  if (existsSync(path)) {
-    try { mode = statSync(path).mode & 0o777; } catch { /* ignore */ }
+  if (existsSync(target)) {
+    try { mode = statSync(target).mode & 0o777; } catch { /* ignore */ }
   }
-  const tmp = `${path}.tmp.${process.pid}`;
+  const tmp = `${target}.tmp.${process.pid}`;
   writeFileSync(tmp, content, { mode });
-  renameSync(tmp, path);
+  renameSync(tmp, target);
 }
 
 export function registerHook(opts: RegisterOptions = {}): RegisterResult {
@@ -223,17 +227,15 @@ function isSessionStartHook(h: HookEntry): boolean {
 }
 
 function isSessionEndHook(h: HookEntry): boolean {
-  // Match `... stop-watch` or `... stop-watch --cwd ...`. Require either a leading space
-  // or path separator so we don't false-match unrelated commands containing the string.
-  if (!hasSubcommand(h, STOP_HOOK_SUFFIX)) return false;
-  const cmd = (h.command ?? "");
-  return /(?:^|[\s/])stop-watch(?:\s|$)/.test(cmd);
+  return hasSubcommand(h, STOP_HOOK_SUFFIX);
 }
 
+// The subcommand must be a complete argument of the command. This matches every Spindle
+// install, including stale `bun <path>/cli.ts <subcommand>` entries, and leaves alone
+// another tool's hook whose script name only contains the text (for example
+// `~/hooks/log-session-start-hook.sh`).
 function hasSubcommand(h: HookEntry, subcommand: string): boolean {
   if (h === null || typeof h !== "object") return false;
   if (typeof h.command !== "string") return false;
-  // Subcommand names (session-start-hook, stop-watch) are unique to Spindle. Match any
-  // command running them — covers stale `bun <subcommand>` entries from prior installs.
-  return h.command.includes(subcommand);
+  return h.command.split(/\s+/).includes(subcommand);
 }

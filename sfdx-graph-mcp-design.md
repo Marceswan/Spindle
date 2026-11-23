@@ -446,7 +446,13 @@ For each file in the work queue:
 
 Pass 1 is parallelizable (workers process files independently).
 
+File discovery (`src/pipeline/discover.ts`): each package directory of `sfdx-project.json` is searched at any depth for type folders (`classes`, `triggers`, `objects`, `flexipages`, `layouts`, `flows`, `staticresources`, `permissionsets`, `permissionsetgroups`, `profiles`, `email`, `labels`, `pages`, `components`, `aura`, `lwc`). `main/default` is one possible layout, not a requirement. Single-file types are found by suffix in the type folder and its subfolders. `objects`, `email`, `lwc` and `aura` keep their own structure rules. Dot directories and `node_modules` are skipped. Entries are read in name order, and a file that two overlapping package directories reach is returned one time.
+
+XML values (`src/parsers/metadata-xml/xml.ts`): all metadata parsers and the Aura parser use one parser factory with value conversion off. Every leaf is a string as written; `xmlText`, `xmlBool` and `xmlNumber` give each property one defined type. A picklist value `001` stays `"001"`, and a formula that is only `true` is the string `"true"`.
+
 ### 7.2 Pass 2: Intra-domain Reference Resolution
+
+Placeholders for targets with no metadata: when the target of an edge is an `SObject` or a `Field` that no node stands for, pass 2 creates a placeholder node (`isPlaceholder: true`, no owning file) and writes the edge. This applies only to edges with confidence 0.8 or higher; a regex-tier edge (Visualforce binding, validation formula, FlexiPage property, email merge field) never creates a node, because its token scan also matches text that is not a field. A `Field` placeholder needs a qualified name of exactly `Object.Field`. A SOQL edge gets one only when no relationship traversal is involved. `SObject` and `Field` names are matched without regard to case; two spellings of one name are merged into one node, and the real node wins over a placeholder. A placeholder becomes a real node, with the same id, when its metadata file is indexed. A placeholder that no edge uses is deleted at the end of the index.
 
 Once all structural nodes exist:
 
@@ -477,15 +483,34 @@ Compute and cache:
 
 Triggered by chokidar file events or by the explicit `index_project` tool with `mode: "incremental"`.
 
-Algorithm:
+Algorithm (as implemented):
 
-1. Compute new content hash for changed files.
-1. For each file with a changed hash:
-- Delete all nodes and edges sourced from that file.
-- Mark the file’s backref set as “needs pass 3 rerun” (their outgoing edges to symbols in the changed file may now be stale).
-1. Re-run pass 1 and 2 for the changed file.
-1. Re-run pass 3 for: changed files plus files in their backref sets.
-1. Update reverse index.
+1. Compute the content hash of every discovered file. An email template hashes its meta XML together with its body file.
+1. Remove files that are no longer on disk: delete their nodes (the cascade deletes their edges) and their file hashes.
+1. For each file with a changed hash, in one transaction:
+- Upsert the parsed nodes. A node that still exists keeps its id, so edges from unchanged files stay valid.
+- Delete only the nodes of the file that the parse no longer emits.
+- Delete the edges that start at a node of the file. Pass 2 writes them again.
+1. If the set of nodes of a file changed (a node appeared or disappeared), or a file was removed, parse again every file that `file_backrefs` records as referring to it. Their own nodes do not change, so one round is sufficient. This restores edges to a symbol that disappeared and came back (a broken intermediate save, a branch switch, a restored file).
+1. Run pass 2 for all files parsed in this run.
+1. Update the reverse index. Rows are added and never removed in incremental mode: a stale row costs one unnecessary reparse, a missing row loses edges. A full index rebuilds the table.
+
+Placeholder nodes: the Apex parser emits a placeholder `SObject` node for an object it queries. A placeholder never replaces a node that came from metadata, and no file owns it (`file_path` is NULL), so the reparse or removal of one referring file cannot delete it.
+
+Project identity: the project root is resolved with `realpath` before it is stored. A symlinked path and a path with a trailing slash map to one project row, and the watcher reindexes that same row. The shared service accepts only an absolute `project_root`. A row that an older version stored under a symlinked path of the same directory is adopted: it keeps its id and gets the canonical root.
+
+Known gaps of incremental mode (a full index, or an edit of the referring file, corrects each one):
+
+- A reference that never resolved (the target did not exist yet) is not retried when the target appears in another file, because no reverse-index row exists for it.
+- A change to a node property that resolution reads, with no change to the set of nodes, does not cause a reparse of the referring files. Example: a new `relationshipName` on a lookup field leaves the edges of an unchanged SOQL subquery as they were.
+- Two source files that define the same qualified name (the same object metadata in two package directories) share one node, and the last parsed file owns it. When the owning copy is deleted, the node goes with it until the other copy is parsed again.
+- A file that the parser rejects with an exception keeps the nodes of its last good parse.
+
+Cost: when the set of nodes of a widely referenced file changes, every referring file is parsed again. Measured on 1,501 classes that call one utility class: a body edit takes about 50 ms, a new method about 2.3 s (a full index takes 1.2 s there because of the single hub). The upper limit is the cost of a full index.
+
+Crash recovery: the discovery record of the shared service lists the watched roots. A clean shutdown removes the record. A record that is present at startup comes from a service that crashed or was killed; the new service starts the watchers again and runs one incremental index per root.
+
+Data epoch: `PRAGMA user_version` holds `CURRENT_DATA_EPOCH` (`src/graph/schema.ts`). When an indexer fix makes rows from older binaries unreliable, the epoch is raised; the store then clears `file_hashes` and `file_backrefs` one time and each project gets one complete reparse on its next index. This is separate from `schema_version`: the table layout does not change, and an older binary can still open the database.
 
 Target: under 1 second for a single-file change in a project up to 5,000 Apex classes.
 
@@ -673,12 +698,13 @@ Entry points include: test methods (`@IsTest`), trigger handlers reached from a 
   start: { qualified_name: string, label?: string },
   direction: "inbound" | "outbound" | "both",
   edge_types?: string[],                   // default: all reference edges
-  depth?: number,                          // default 2, max 5
-  min_confidence?: number                  // default 0.6
+  depth?: number,                          // integer 1 to 5, default 2
+  min_confidence?: number,                 // default 0.6
+  limit?: number                           // maximum nodes, start node included; default 500, max 5000
 }
 ```
 
-**Output:** a tree of nodes and edges from the start node up to the requested depth, including source lines.
+**Output:** `{ nodes, edges, truncated, node_count, edge_count }`. The traversal is breadth-first, so nodes nearer to the start node have priority. It stops when the node count reaches `limit`; `truncated` is then `true`. Only edges whose two end nodes are both in `nodes` are returned. Invalid input (`start`, `direction`, `depth`, `limit`) gives an error that names the parameter.
 
 ### 9.7 `get_field_usage`
 
@@ -777,7 +803,9 @@ This is the headline tool. It is the answer to “what breaks if I drop this fie
 
 **Input:** `{ project_id, query: string, params?: object }`.
 
-Deferred to v0.5; the typed tools cover 90%+ of real queries.
+**Output:** `{ columns, rows, row_count, truncated, query, warnings }`. When the final `RETURN` has no `LIMIT`, the result has at most 1000 rows (`DEFAULT_ROW_CAP`); `truncated` is then `true` and a warning tells the caller to page with `LIMIT` and `SKIP` or to use `RETURN count(*)`. An explicit `LIMIT` on the final `RETURN` is always obeyed. A `LIMIT` in a `WITH` clause is not a limit on the final result.
+
+Shipped in v0.5; the typed tools cover 90%+ of real queries.
 
 ## 10. Sample Query Patterns
 

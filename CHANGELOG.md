@@ -8,6 +8,83 @@ follow SemVer once a v1.0 binary ships.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Incremental reindex no longer drops edges.** A reparse deleted all nodes of the changed
+  file; the cascade then deleted every edge that an unchanged file had into it (callers,
+  permission grants, LWC/Aura/VF/Flow references). A reparse now keeps node ids, deletes
+  only the nodes that are gone, and reparses the referring files when the set of symbols
+  changes. Existing databases get one automatic complete reparse (data epoch 1).
+- **Deleted files leave the graph.** Their nodes, edges and file hashes stayed, also after
+  `--full`.
+- **Apex placeholder objects no longer replace object metadata**, and no source file owns
+  a placeholder, so the reparse of one class cannot delete an `SObject` node that other
+  files use.
+- **Watch mode ignore rules work with chokidar 4.** The glob strings matched nothing, so
+  `node_modules`, `dist` and `build` were watched. The dot-directory rule tested the
+  absolute path, so a project below a dot directory (for example `.claude/worktrees`)
+  got no events at all.
+- **`index_project` on a directory that is not an SFDX project starts no watcher.** Before,
+  the watcher stayed for the lifetime of the service.
+- **One project row per project.** The root is resolved with `realpath`; a symlinked path
+  or a trailing slash created a second project that the watcher updated in place of the
+  first. A row stored under a symlinked path is adopted and keeps its id. The service
+  rejects a relative `project_root`.
+- **Apex calls:** an unqualified call in the arguments of a qualified call
+  (`System.debug(helper())`) got the outer receiver and stayed unresolved; `this.foo()`
+  stayed unresolved; calls, instantiations and SOSL in a trigger body were dropped; static
+  calls on inner classes stayed unresolved. A class name now resolves through the
+  enclosing classes first; a short name that two classes share gives no edge (before, an
+  instantiation went to whichever class was read last).
+- **`query_graph`:** a label, edge type or property name that is spelled like a keyword
+  (the `CONTAINS` edge type) caused a parse error.
+- **`get_field_usage`** reports email template merge fields (`email_templates`) and queries
+  in trigger bodies. An edit of an email body file alone now causes a reparse.
+- **The MCP adapter connects again** when the shared service stops, and a service that
+  replaces a crashed or killed service starts the same watchers again. A service response
+  above the 32 MB frame limit is now an error reply; before, it closed the connection and
+  every later tool call failed until the client restarted.
+- **`register-hook` / `unregister-hook`** remove only commands that have the Spindle
+  subcommand as a complete argument, and write through a symlinked `settings.json` without
+  replacing the link.
+- **Windows:** the compiled-executable check recognizes Bun's `B:/~BUN/` virtual drive, so
+  the adapter starts the shared service with the correct arguments. Not verified on a
+  Windows host.
+- `install.sh` no longer prints "checksum verified" when no hash tool is available.
+
+### Added
+
+- **Recursive file discovery.** Type folders are found at any depth below each package
+  directory, and single-file types are read from subfolders too. Before, only
+  `<packageDirectory>/main/default/<type>/` was read, so `force-app/feature-x/classes/` and
+  `classes/services/` were not indexed. LWC and Aura bundle files are now read in name
+  order; their content hash changes one time.
+- **Placeholders for objects and fields with no metadata file.** Edges with confidence 0.8
+  or higher to a missing `SObject` or `Field` (permission grants, Flow DML, layout fields,
+  LWC schema imports, Apex SOQL fields) now go to a placeholder node. Before, they were
+  dropped, so `get_field_usage` and `get_permission_access` returned almost nothing for
+  standard objects and fields. Object and field names match without regard to case, also
+  in the `target` of `get_permission_access`.
+- **Result limits.** `query_graph` returns at most 1000 rows when the final `RETURN` has no
+  `LIMIT`. `trace_references` has a `limit` input (default 500 nodes, maximum 5000). Both
+  outputs have a `truncated` flag; `trace_references` also has `node_count` and
+  `edge_count`, and gives a clear error for invalid input.
+
+### Changed
+
+- **XML values are not converted.** One shared parser reads all metadata XML. A picklist
+  value `001` was stored as `1`; a label value `100` was a number; a validation rule whose
+  formula is only `true` could not be parsed. Text is now stored as written. Flags are
+  booleans and `length`, `precision`, `scale` and `apiVersion` are numbers, as before.
+- `trace_references` rejects a `depth` outside 1 to 5; before, it adjusted the value
+  without a message.
+- GitHub workflows give the `contents: write` token only to the release job.
+- `GraphStore` caches its insert statements.
+
+---
+
 ## [v1.2.0] — 2026-09-07 (release setup pending)
 
 - Extract advanced Flow variable, decision, assignment, formula, and record references.

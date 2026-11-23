@@ -105,8 +105,8 @@ describe("FlexiPage + Layout pipeline", () => {
   });
 
   test("emptySpace layoutItems do not produce edges", () => {
-    // Sanity: total LAYOUT_INCLUDES_FIELD edges from the Customer layout = 2 (Email, Tier)
-    // — Name field is a standard field with no metadata so the edge drops; emptySpace is skipped.
+    // Sanity: total LAYOUT_INCLUDES_FIELD edges from the Customer layout = 3 (Name, Email, Tier).
+    // Name is a standard field with no metadata: its edge goes to a placeholder node. emptySpace is skipped.
     type Row = { n: number };
     const row = store.db
       .query<Row, [number, string]>(
@@ -117,6 +117,6 @@ describe("FlexiPage + Layout pipeline", () => {
            AND s.qualified_name = 'Customer__c-Customer Layout'`,
       )
       .get(projectId, EdgeType.LayoutIncludesField);
-    expect(row?.n ?? 0).toBe(2);
+    expect(row?.n ?? 0).toBe(3);
   });
 });

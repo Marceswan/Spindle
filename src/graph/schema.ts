@@ -8,6 +8,12 @@
 
 export const CURRENT_SCHEMA_VERSION = 1;
 
+// Stored in PRAGMA user_version. Raise it when an indexer fix makes rows from older
+// binaries unreliable: the store then drops the file hashes and each project gets one
+// complete reparse. This is not a schema change. Older binaries ignore the value.
+//   1: stable node ids on reparse, ownerless placeholders, removal of deleted files.
+export const CURRENT_DATA_EPOCH = 1;
+
 export const SCHEMA_DDL = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;

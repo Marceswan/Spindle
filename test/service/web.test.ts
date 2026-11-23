@@ -3,7 +3,7 @@ import { startWebUi } from "../../src/web/server.ts";
 
 test("web explorer permits only authenticated reads and closes its service client", async () => {
   let closed = false;
-  const web = await startWebUi({ client: { request: async () => ({ projects: [] }), close: async () => { closed = true; } } });
+  const web = await startWebUi({ client: { request: async () => ({ projects: [] }), close: async () => { closed = true; }, isClosed: () => closed } });
   try {
     const url = new URL(web.url); const token = url.hash.slice(1); url.hash = "";
     expect((await fetch(url)).status).toBe(200);

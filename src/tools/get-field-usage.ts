@@ -8,7 +8,9 @@
 //   - validation_rules: VRs whose formula references the field
 //   - aura_components: pending Aura parser
 //   - flows: pending Flow parser
-//   - layouts, permission_sets, profiles, email_templates: pending later passes
+//   - layouts: Layout and FlexiPage field placements
+//   - email_templates: merge fields in the subject and body
+//   - permission_sets, profiles: use get_permission_access
 //
 // The tool always returns all buckets; empty arrays mean "indexed, no usage" or "not yet
 // modeled by Spindle." The response includes a `coverage` summary so the caller knows what
@@ -23,8 +25,9 @@ export const name = "get_field_usage";
 export const description =
   "Find every reference to a Salesforce field across all metadata types. The killer query for impact analysis. " +
   "Returns Apex methods that SOQL or DML the parent SObject, LWC bundles importing via @salesforce/schema, " +
-  "Visualforce bindings, validation formulas, layouts and Flow fields resolved from record variables, " +
-  "decisions, assignments and formulas. Flow relationship traversal and screen/choice field declarations remain incomplete.";
+  "Visualforce bindings, validation formulas, layouts, email template merge fields and Flow fields resolved from record variables, " +
+  "decisions, assignments and formulas. Flow relationship traversal and screen/choice field declarations remain incomplete. " +
+  "Names match without regard to case. A standard field with no metadata file in the project is reported from its references (a placeholder node).";
 
 export const inputSchema = {
   type: "object",
@@ -80,7 +83,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
   const { project_id, field, include_indirect } = input as Input;
   const includeIndirect = include_indirect ?? true;
 
-  if (!field.includes(".")) {
+  if (typeof field !== "string" || !field.includes(".")) {
     return { error: `field must be in "Object.Field" form (got "${field}")` };
   }
   const parentSObject = field.slice(0, field.indexOf("."));
@@ -100,9 +103,9 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     permission_sets: [],
     email_templates: [],
     coverage: {
-      authoritative: ["lwc_bundles", "vf_pages", "vf_components", "validation_rules", "layouts"],
+      authoritative: ["lwc_bundles", "vf_pages", "vf_components", "validation_rules", "layouts", "email_templates"],
       indirect: ["apex_methods", "flows"],
-      pending: ["aura_components", "permission_sets", "email_templates", "formula_fields", "flow_relationship_traversal", "flow_screen_choice_fields"],
+      pending: ["aura_components", "permission_sets", "formula_fields", "flow_relationship_traversal", "flow_screen_choice_fields"],
     },
   };
 
@@ -118,7 +121,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     usage_context: string | null;
   };
   const directRows = store.db
-    .query<Row, [number, string, string, string, string, string, string, string, string, string, string]>(
+    .query<Row, [number, string, string, string, string, string, string, string, string, string, string, string]>(
       `SELECT DISTINCT
          s.label AS source_label,
          s.name AS source_name,
@@ -126,14 +129,14 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
          s.file_path AS source_file,
          e.source_line AS source_line,
          e.edge_type AS edge_type,
-         CASE WHEN s.label = 'ApexMethod' THEN json_extract(e.properties, '$.context') END AS usage_context
+         CASE WHEN s.label IN ('ApexMethod', 'ApexTrigger') THEN json_extract(e.properties, '$.context') END AS usage_context
        FROM edges e
        JOIN nodes s ON s.id = e.source_id
        JOIN nodes t ON t.id = e.target_id
        WHERE e.project_id = ?
          AND t.label = ?
-         AND t.qualified_name = ?
-         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?, ?)`,
+         AND t.qualified_name = ? COLLATE NOCASE
+         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .all(
       project_id,
@@ -147,6 +150,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       EdgeType.LayoutIncludesField,
       EdgeType.FlexipageReferencesField,
       EdgeType.FlowUsesField,
+      EdgeType.EmailReferencesField,
     );
 
   for (const row of directRows) {
@@ -171,11 +175,14 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       report.aura_components.push(usage);
     } else if (row.source_label === NodeLabel.Flow) {
       report.flows.push(usage);
-    } else if (row.source_label === NodeLabel.ApexMethod) {
+    } else if (row.source_label === NodeLabel.ApexMethod || row.source_label === NodeLabel.ApexTrigger) {
+      // A query in a trigger body belongs to the trigger node; it has no method.
       // Direct REFERENCES_FIELD edge from a parsed SOQL clause. This is the
       // most precise Apex bucket; takes priority over the indirect SObject-level approximation
       // below, which is now redundant for fields whose object has metadata in the graph.
       report.apex_methods.push({ ...usage, context: row.usage_context ?? "SOQL_SELECT" });
+    } else if (row.source_label === NodeLabel.EmailTemplate) {
+      report.email_templates.push(usage);
     } else if (row.source_label === NodeLabel.Layout) {
       report.layouts.push(usage);
     } else if (row.source_label === NodeLabel.FlexiPage) {
@@ -197,7 +204,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       edge_type: string;
     };
     const apexRows = store.db
-      .query<ApexRow, [number, string, string, string, string, string]>(
+      .query<ApexRow, [number, string, string, string, string, string, string]>(
         `SELECT
            s.qualified_name AS qualified_name,
            s.name AS name,
@@ -208,14 +215,15 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
          JOIN nodes s ON s.id = e.source_id
          JOIN nodes t ON t.id = e.target_id
          WHERE e.project_id = ?
-           AND s.label = ?
+           AND s.label IN (?, ?)
            AND t.label = ?
-           AND t.qualified_name = ?
+           AND t.qualified_name = ? COLLATE NOCASE
            AND e.edge_type IN (?, ?)`,
       )
       .all(
         project_id,
         NodeLabel.ApexMethod,
+        NodeLabel.ApexTrigger,
         NodeLabel.SObject,
         parentSObject,
         EdgeType.SoqlQueries,
@@ -256,7 +264,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
          WHERE e.project_id = ?
            AND s.label = ?
            AND t.label = ?
-           AND t.qualified_name = ?
+           AND t.qualified_name = ? COLLATE NOCASE
            AND e.edge_type = ?`,
       )
       .all(project_id, NodeLabel.Flow, NodeLabel.SObject, parentSObject, EdgeType.FlowDmlOn);

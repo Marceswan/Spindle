@@ -215,4 +215,9 @@ A change is done when:
 
 ## Things that have gone wrong before
 
-Empty for now. Add entries as we discover them. If a failure takes more than two iterations to converge, write it down here so the next session doesn't relearn it.
+Add entries as we discover them. If a failure takes more than two iterations to converge, write it down here so the next session doesn't relearn it.
+
+- **Never delete and reinsert the nodes of a file on reparse.** Node ids are the endpoints of edges from other files; `ON DELETE CASCADE` silently removes those edges. Upsert, then delete only the nodes that are gone (`pass1-structural.ts`). `test/pipeline/incremental.test.ts` compares the graph after an incremental index with the graph after a full index; extend it for every new pipeline behavior.
+- **chokidar 4 has no globs.** A string in `ignored` matches one exact path. Use a function (`src/service/watch-ignore.ts`), and test the path relative to the project root, not the absolute path.
+- **A parser-emitted placeholder must not own or replace a real node.** Write it with `store.ensurePlaceholderNode`, never `insertNode`.
+- **Bun compiled executables use `/$bunfs/` on macOS/Linux and `B:/~BUN/` on Windows.** Use `isSourceRun` (`src/util/runtime.ts`); do not test `import.meta.url` inline.

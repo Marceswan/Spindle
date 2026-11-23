@@ -5,8 +5,10 @@ on:
     tags:
       - "v*.*.*"
 
+# Build jobs run dependency code and tests; they get a read-only token. Only the job that
+# publishes the release can write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-matrix:
@@ -88,6 +90,8 @@ jobs:
     name: Publish release
     needs: build-matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4

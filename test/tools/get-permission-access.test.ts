@@ -92,6 +92,21 @@ describe("get_permission_access tool", () => {
     expect(group.includes).toContain("Spindle_Editor");
   });
 
+  test("the target name matches in any case", async () => {
+    const exact = await handler({ project_id: projectId, target: { type: "Field", qualified_name: "Customer__c.Email__c" } }, store) as AccessReport;
+    const lower = await handler({ project_id: projectId, target: { type: "Field", qualified_name: "customer__c.email__c" } }, store) as AccessReport;
+    expect(lower.total_grants).toBe(exact.total_grants);
+    expect(lower.total_grants).toBeGreaterThan(0);
+    expect(lower.permission_set_groups).toEqual(exact.permission_set_groups);
+    const apex = await handler({ project_id: projectId, target: { type: "ApexClass", qualified_name: "accountservice" } }, store) as AccessReport;
+    expect(apex.total_grants).toBeGreaterThan(0);
+  });
+
+  test("a missing target returns an error", async () => {
+    const result = await handler({ project_id: projectId }, store) as { error?: string };
+    expect(result.error).toContain("target");
+  });
+
   test("unknown target type returns an error", async () => {
     const result = await handler(
       { project_id: projectId, target: { type: "Flow", qualified_name: "Whatever" } },

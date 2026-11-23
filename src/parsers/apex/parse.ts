@@ -572,12 +572,13 @@ function walkExpressionsAndStatements(
       if (id !== undefined) {
         const calleeName = id.text;
         const argCount = node.expressionList()?.expression().length ?? 0;
-        // receiverFromDotExpression returns null for unqualified calls.
-        const receiverText = receiverFromDotExpression(node);
+        // The grammar puts every dotted call in a DotMethodCallContext, so a MethodCall
+        // never has a receiver. Do not take one from an ancestor: in `System.debug(helper())`
+        // the ancestor dot expression belongs to `debug`, not to `helper`.
         result.unresolved.push({
           kind: "call",
           fromMethodQName: enclosingQName,
-          receiverText,
+          receiverText: null,
           calleeName,
           argCount,
           sourceFile: filePath,
@@ -664,12 +665,14 @@ function walkExpressionsAndStatements(
       }
     } else if (node instanceof SoslLiteralContext) {
       const objects = extractSoslReturningObjects(node.text);
+      // The enclosing node is a trigger when the query is in a trigger body.
+      const sourceLabel = result.nodes.find(n => n.qualifiedName === enclosingQName)?.label ?? NodeLabel.ApexMethod;
       for (const objName of objects) {
         ensureSObjectPlaceholder(result, objName, filePath, node.start.line);
         result.edges.push({
           edgeType: EdgeType.SoslQueries,
           fromQName: enclosingQName,
-          fromLabel: NodeLabel.ApexMethod,
+          fromLabel: sourceLabel,
           toQName: objName,
           toLabel: NodeLabel.SObject,
           confidence: Confidence.Regex,
@@ -685,25 +688,6 @@ function walkExpressionsAndStatements(
       }
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Receiver detection: walk up from a MethodCall to its containing DotExpression
-// to capture the receiver text (the part before the `.`).
-// ---------------------------------------------------------------------------
-
-function receiverFromDotExpression(call: MethodCallContext): string | null {
-  // Apex grammar: `obj.method(args)` parses as DotExpression( expression() , dotMethodCall(...) ).
-  // The MethodCall lives inside a DotMethodCall, whose parent is a DotExpression.
-  let parent: ParserRuleContext | undefined = call.parent;
-  while (parent !== undefined) {
-    if (parent instanceof DotExpressionContext) {
-      const left = parent.expression();
-      return left.text;
-    }
-    parent = parent.parent;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -785,11 +769,12 @@ function createdNameSimple(created: ReturnType<CreatorContext["createdName"]>): 
 function ensureSObjectPlaceholder(
   result: ParseResult,
   name: string,
-  filePath: string,
+  _filePath: string,
   line: number,
 ): void {
-  // Placeholder SObject node. Real SObject nodes from metadata XML (v0.2) will be upserted on
-  // the same qualified_name and replace this placeholder's properties.
+  // Placeholder SObject node. A real SObject node from metadata XML has the same
+  // qualified_name and takes its place. The properties name no file: many files share one
+  // placeholder, and a path here would differ between two snapshots of the same source.
   if (result.nodes.some((n) => n.label === NodeLabel.SObject && n.qualifiedName === name)) {
     return;
   }
@@ -799,7 +784,7 @@ function ensureSObjectPlaceholder(
     qualifiedName: name,
     startLine: line,
     endLine: line,
-    properties: { isPlaceholder: true, firstSeenIn: filePath },
+    properties: { isPlaceholder: true },
   });
 }
 
