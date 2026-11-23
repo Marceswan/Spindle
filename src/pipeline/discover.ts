@@ -3,7 +3,7 @@
 // a domain-specific parser in pass 1.
 
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { type Dirent, readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -84,263 +84,208 @@ export function readProjectManifest(projectRoot: string): ProjectManifest {
   };
 }
 
+// Single-file type folders. Each folder name maps to the file suffix and kind it yields.
+// Matching files are found in the folder and in its subfolders at any depth.
+const APEX_SPECS: { suffix: string; kind: DiscoveredFileKind }[] = [
+  { suffix: APEX_CLASS_SUFFIX, kind: "apex-class" },
+  { suffix: APEX_TRIGGER_SUFFIX, kind: "apex-trigger" },
+];
+const SINGLE_FILE_TYPES: Record<string, { suffix: string; kind: DiscoveredFileKind }[]> = {
+  // As before, classes/ and triggers/ both accept .cls and .trigger files.
+  classes: APEX_SPECS,
+  triggers: APEX_SPECS,
+  flexipages: [{ suffix: ".flexipage-meta.xml", kind: "flexipage" }],
+  layouts: [{ suffix: ".layout-meta.xml", kind: "layout" }],
+  flows: [{ suffix: ".flow-meta.xml", kind: "flow" }],
+  staticresources: [{ suffix: ".resource-meta.xml", kind: "static-resource" }],
+  permissionsets: [{ suffix: ".permissionset-meta.xml", kind: "permission-set" }],
+  permissionsetgroups: [{ suffix: ".permissionsetgroup-meta.xml", kind: "permission-set-group" }],
+  profiles: [{ suffix: ".profile-meta.xml", kind: "profile" }],
+  labels: [{ suffix: ".labels-meta.xml", kind: "custom-labels" }],
+  pages: [{ suffix: ".page", kind: "vf-page" }],
+  components: [{ suffix: ".component", kind: "vf-component" }],
+};
+
+// Type folders that need their own handling (child structure or bundles).
+const SPECIAL_TYPES = new Set(["objects", "email", "aura", "lwc"]);
+
+function isTypeFolder(name: string): boolean {
+  return name in SINGLE_FILE_TYPES || SPECIAL_TYPES.has(name);
+}
+
+function isSkippedDirectory(name: string): boolean {
+  return name.startsWith(".") || name === "node_modules";
+}
+
 export async function discoverApexFiles(projectRoot: string): Promise<DiscoveredFile[]> {
   const manifest = readProjectManifest(projectRoot);
   const out: DiscoveredFile[] = [];
+  // Overlapping package directories reach the same file twice; the absolute path is the key.
+  const seen = new Set<string>();
 
-  for (const pkg of manifest.packageDirectories) {
-    const pkgRoot = join(projectRoot, pkg.path);
-    if (!safeIsDirectory(pkgRoot)) {
-      continue;
+  const add = (file: DiscoveredFile): void => {
+    if (seen.has(file.absolutePath)) return;
+    seen.add(file.absolutePath);
+    out.push(file);
+  };
+  const addFile = (
+    kind: DiscoveredFileKind,
+    absolutePath: string,
+    extra: { parentSObject?: string } = {},
+  ): void => {
+    add({
+      kind,
+      absolutePath,
+      relativePath: toRelative(projectRoot, absolutePath),
+      contentHash: hashContent(readFileSync(absolutePath)),
+      ...extra,
+    });
+  };
+
+  // Find type folders at any depth. A type folder is processed by its type rules and is not
+  // searched for further type folders.
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await sortedEntries(dir)) {
+      if (!entry.isDirectory() || isSkippedDirectory(entry.name)) continue;
+      const child = join(dir, entry.name);
+      if (isTypeFolder(entry.name)) await processTypeFolder(entry.name, child);
+      else await walk(child);
     }
-    const defaultDir = join(pkgRoot, "main", "default");
+  };
 
-    // Apex: classes/ and triggers/
-    for (const subdir of ["classes", "triggers"] as const) {
-      const dir = join(defaultDir, subdir);
-      if (!safeIsDirectory(dir)) continue;
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || entry.name.startsWith(".")) continue;
-
-        let kind: DiscoveredFileKind | null = null;
-        if (entry.name.endsWith(APEX_CLASS_SUFFIX)) kind = "apex-class";
-        else if (entry.name.endsWith(APEX_TRIGGER_SUFFIX)) kind = "apex-trigger";
-        if (kind === null) continue;
-
-        const absolutePath = join(dir, entry.name);
-        out.push({
-          kind,
-          absolutePath,
-          relativePath: toRelative(projectRoot, absolutePath),
-          contentHash: hashContent(readFileSync(absolutePath)),
-        });
-      }
-    }
-
-    // Object metadata: objects/<Name>/<Name>.object-meta.xml + fields/ + validationRules/ + recordTypes/
-    const objectsDir = join(defaultDir, "objects");
-    if (safeIsDirectory(objectsDir)) {
-      const objectEntries = await readdir(objectsDir, { withFileTypes: true });
-      for (const objEntry of objectEntries) {
-        if (!objEntry.isDirectory()) continue;
-        const objectName = objEntry.name;
-        const objectRoot = join(objectsDir, objectName);
-
-        // <Name>.object-meta.xml
-        const objMeta = join(objectRoot, `${objectName}.object-meta.xml`);
-        if (safeIsFile(objMeta)) {
-          out.push({
-            kind: "sobject-meta",
-            absolutePath: objMeta,
-            relativePath: toRelative(projectRoot, objMeta),
-            contentHash: hashContent(readFileSync(objMeta)),
-          });
+  const processTypeFolder = async (name: string, dir: string): Promise<void> => {
+    const specs = SINGLE_FILE_TYPES[name];
+    if (specs) {
+      for (const file of await filesBelow(dir)) {
+        for (const { suffix, kind } of specs) {
+          if (file.endsWith(suffix)) addFile(kind, file);
         }
+      }
+    } else if (name === "objects") await processObjects(dir);
+    else if (name === "email") await processEmail(dir);
+    else await processBundles(dir, name === "lwc" ? "lwc-bundle" : "aura-bundle");
+  };
 
-        // fields/<Field>.field-meta.xml
-        await collectXmlChildren(out, projectRoot, objectName, join(objectRoot, "fields"), ".field-meta.xml", "field-meta");
-        // validationRules/<Rule>.validationRule-meta.xml
-        await collectXmlChildren(out, projectRoot, objectName, join(objectRoot, "validationRules"), ".validationRule-meta.xml", "validation-rule-meta");
-        // recordTypes/<RT>.recordType-meta.xml
-        await collectXmlChildren(out, projectRoot, objectName, join(objectRoot, "recordTypes"), ".recordType-meta.xml", "record-type-meta");
+  // objects/<Name>/<Name>.object-meta.xml + fields/ + validationRules/ + recordTypes/
+  const processObjects = async (objectsDir: string): Promise<void> => {
+    for (const objEntry of await sortedEntries(objectsDir)) {
+      if (!objEntry.isDirectory()) continue;
+      const objectName = objEntry.name;
+      const objectRoot = join(objectsDir, objectName);
+      const objMeta = join(objectRoot, `${objectName}.object-meta.xml`);
+      if (safeIsFile(objMeta)) addFile("sobject-meta", objMeta);
+      for (const [childDir, suffix, kind] of [
+        ["fields", ".field-meta.xml", "field-meta"],
+        ["validationRules", ".validationRule-meta.xml", "validation-rule-meta"],
+        ["recordTypes", ".recordType-meta.xml", "record-type-meta"],
+      ] as const) {
+        for (const file of await directFiles(join(objectRoot, childDir), suffix)) {
+          addFile(kind, file, { parentSObject: objectName });
+        }
       }
     }
+  };
 
-    // FlexiPages, Layouts, Flows, StaticResources. Each is a single XML file.
-    for (const [dirName, suffix, kind] of [
-      ["flexipages", ".flexipage-meta.xml", "flexipage"] as const,
-      ["layouts", ".layout-meta.xml", "layout"] as const,
-      ["flows", ".flow-meta.xml", "flow"] as const,
-      ["staticresources", ".resource-meta.xml", "static-resource"] as const,
-    ]) {
-      const dir = join(defaultDir, dirName);
-      if (!safeIsDirectory(dir)) continue;
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || entry.name.startsWith(".")) continue;
-        if (!entry.name.endsWith(suffix)) continue;
+  // email/<folder>[/<subfolder>...]/<name>.email-meta.xml. The folder path below email/ goes
+  // in parentSObject; the email template parser reads it as the template folder.
+  const processEmail = async (emailRoot: string): Promise<void> => {
+    const visit = async (dir: string, folderPath: string): Promise<void> => {
+      for (const entry of await sortedEntries(dir)) {
         const abs = join(dir, entry.name);
-        out.push({
-          kind,
-          absolutePath: abs,
-          relativePath: toRelative(projectRoot, abs),
-          contentHash: hashContent(readFileSync(abs)),
-        });
-      }
-    }
-
-    // Permission sets, permission set groups, profiles. Each is a single XML file.
-    for (const [dirName, suffix, kind] of [
-      ["permissionsets", ".permissionset-meta.xml", "permission-set"] as const,
-      ["permissionsetgroups", ".permissionsetgroup-meta.xml", "permission-set-group"] as const,
-      ["profiles", ".profile-meta.xml", "profile"] as const,
-    ]) {
-      const dir = join(defaultDir, dirName);
-      if (!safeIsDirectory(dir)) continue;
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || entry.name.startsWith(".")) continue;
-        if (!entry.name.endsWith(suffix)) continue;
-        const abs = join(dir, entry.name);
-        out.push({
-          kind,
-          absolutePath: abs,
-          relativePath: toRelative(projectRoot, abs),
-          contentHash: hashContent(readFileSync(abs)),
-        });
-      }
-    }
-
-    // Email templates: email/<folder>/<name>.email-meta.xml (Salesforce stores templates one
-    // folder deep). The associated body file is <name>.email next to the meta XML.
-    const emailRoot = join(defaultDir, "email");
-    if (safeIsDirectory(emailRoot)) {
-      const folders = await readdir(emailRoot, { withFileTypes: true });
-      for (const folder of folders) {
-        if (!folder.isDirectory()) continue;
-        const folderPath = join(emailRoot, folder.name);
-        const inside = await readdir(folderPath, { withFileTypes: true });
-        for (const entry of inside) {
-          if (!entry.isFile() || !entry.name.endsWith(".email-meta.xml")) continue;
-          const abs = join(folderPath, entry.name);
-          out.push({
+        if (entry.isDirectory()) {
+          if (!isSkippedDirectory(entry.name)) {
+            await visit(abs, folderPath === "" ? entry.name : `${folderPath}/${entry.name}`);
+          }
+        } else if (folderPath !== "" && entry.isFile() && entry.name.endsWith(".email-meta.xml")) {
+          // The parser also scans the sibling body file, so the hash must cover both.
+          // Without the body, an edit to the body alone is not seen as a change.
+          const hasher = createHash("sha1");
+          hasher.update(readFileSync(abs));
+          const bodyPath = abs.replace(/\.email-meta\.xml$/, ".email");
+          if (safeIsFile(bodyPath)) hasher.update(readFileSync(bodyPath));
+          add({
             kind: "email-template",
             absolutePath: abs,
             relativePath: toRelative(projectRoot, abs),
-            contentHash: hashContent(readFileSync(abs)),
-            // Reuse parentSObject as "folder" — the email template parser knows what to do with it.
-            parentSObject: folder.name,
+            contentHash: hasher.digest("hex"),
+            parentSObject: folderPath,
           });
         }
       }
-    }
+    };
+    await visit(emailRoot, "");
+  };
 
-    // Custom labels: labels/CustomLabels.labels-meta.xml (one file holds many labels).
-    const labelsDir = join(defaultDir, "labels");
-    if (safeIsDirectory(labelsDir)) {
-      const labelEntries = await readdir(labelsDir, { withFileTypes: true });
-      for (const labelEntry of labelEntries) {
-        if (!labelEntry.isFile() || !labelEntry.name.endsWith(".labels-meta.xml")) continue;
-        const abs = join(labelsDir, labelEntry.name);
-        out.push({
-          kind: "custom-labels",
-          absolutePath: abs,
-          relativePath: toRelative(projectRoot, abs),
-          contentHash: hashContent(readFileSync(abs)),
-        });
+  // lwc/<name>/ and aura/<name>/. Each direct child directory is one bundle; only its direct
+  // files are bundle files (subdirectories such as __tests__ are ignored).
+  const processBundles = async (
+    bundlesDir: string,
+    kind: "lwc-bundle" | "aura-bundle",
+  ): Promise<void> => {
+    for (const entry of await sortedEntries(bundlesDir)) {
+      if (!entry.isDirectory()) continue;
+      const bundleDir = join(bundlesDir, entry.name);
+      const bundleFiles: BundleFile[] = [];
+      const hasher = createHash("sha1");
+      for (const fe of await sortedEntries(bundleDir)) {
+        if (!fe.isFile() || fe.name.startsWith(".")) continue;
+        const abs = join(bundleDir, fe.name);
+        hasher.update(fe.name);
+        hasher.update(readFileSync(abs));
+        bundleFiles.push({ absolutePath: abs, fileName: fe.name });
       }
+      if (bundleFiles.length === 0) continue;
+      add({
+        kind,
+        absolutePath: bundleDir,
+        relativePath: toRelative(projectRoot, bundleDir),
+        contentHash: hasher.digest("hex"),
+        bundleFiles,
+        bundleName: entry.name,
+      });
     }
+  };
 
-    // Visualforce pages and components: pages/<name>.page, components/<name>.component
-    for (const [dirName, suffix, kind] of [
-      ["pages", ".page", "vf-page"] as const,
-      ["components", ".component", "vf-component"] as const,
-    ]) {
-      const vfDir = join(defaultDir, dirName);
-      if (!safeIsDirectory(vfDir)) continue;
-      const vfEntries = await readdir(vfDir, { withFileTypes: true });
-      for (const vfEntry of vfEntries) {
-        if (!vfEntry.isFile() || vfEntry.name.startsWith(".")) continue;
-        if (!vfEntry.name.endsWith(suffix)) continue;
-        const abs = join(vfDir, vfEntry.name);
-        out.push({
-          kind,
-          absolutePath: abs,
-          relativePath: toRelative(projectRoot, abs),
-          contentHash: hashContent(readFileSync(abs)),
-        });
-      }
-    }
-
-    // Aura bundles: aura/<bundleName>/ containing <bundleName>.cmp + controller/helper JS.
-    const auraDir = join(defaultDir, "aura");
-    if (safeIsDirectory(auraDir)) {
-      const auraEntries = await readdir(auraDir, { withFileTypes: true });
-      for (const auraEntry of auraEntries) {
-        if (!auraEntry.isDirectory()) continue;
-        const bundleName = auraEntry.name;
-        const bundleDir = join(auraDir, bundleName);
-        const bundleFiles: BundleFile[] = [];
-        const fileEntries = await readdir(bundleDir, { withFileTypes: true });
-        const hasher = createHash("sha1");
-        for (const fe of fileEntries) {
-          if (!fe.isFile() || fe.name.startsWith(".")) continue;
-          const abs = join(bundleDir, fe.name);
-          const contents = readFileSync(abs);
-          hasher.update(fe.name);
-          hasher.update(contents);
-          bundleFiles.push({ absolutePath: abs, fileName: fe.name });
-        }
-        if (bundleFiles.length === 0) continue;
-        out.push({
-          kind: "aura-bundle",
-          absolutePath: bundleDir,
-          relativePath: toRelative(projectRoot, bundleDir),
-          contentHash: hasher.digest("hex"),
-          bundleFiles,
-          bundleName,
-        });
-      }
-    }
-
-    // LWC bundles: lwc/<componentName>/ containing <componentName>.{js,html,css,js-meta.xml}.
-    const lwcDir = join(defaultDir, "lwc");
-    if (safeIsDirectory(lwcDir)) {
-      const lwcEntries = await readdir(lwcDir, { withFileTypes: true });
-      for (const lwcEntry of lwcEntries) {
-        if (!lwcEntry.isDirectory()) continue;
-        const bundleName = lwcEntry.name;
-        const bundleDir = join(lwcDir, bundleName);
-        const bundleFiles: BundleFile[] = [];
-        const fileEntries = await readdir(bundleDir, { withFileTypes: true });
-        const hasher = createHash("sha1");
-        for (const fe of fileEntries) {
-          if (!fe.isFile() || fe.name.startsWith(".")) continue;
-          const abs = join(bundleDir, fe.name);
-          const contents = readFileSync(abs);
-          hasher.update(fe.name);
-          hasher.update(contents);
-          bundleFiles.push({ absolutePath: abs, fileName: fe.name });
-        }
-        if (bundleFiles.length === 0) continue;
-        out.push({
-          kind: "lwc-bundle",
-          absolutePath: bundleDir,
-          relativePath: toRelative(projectRoot, bundleDir),
-          contentHash: hasher.digest("hex"),
-          bundleFiles,
-          bundleName,
-        });
-      }
-    }
+  for (const pkg of manifest.packageDirectories) {
+    const pkgRoot = join(projectRoot, pkg.path);
+    if (!safeIsDirectory(pkgRoot)) continue;
+    await walk(pkgRoot);
   }
 
   return out;
 }
 
-async function collectXmlChildren(
-  out: DiscoveredFile[],
-  projectRoot: string,
-  parentSObject: string,
-  dir: string,
-  suffix: string,
-  kind: DiscoveredFileKind,
-): Promise<void> {
-  if (!safeIsDirectory(dir)) return;
+// Directory entries sorted by name, so discovery order does not depend on the file system.
+async function sortedEntries(dir: string): Promise<Dirent[]> {
   const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.name.startsWith(".")) continue;
-    if (!entry.name.endsWith(suffix)) continue;
-    const absolutePath = join(dir, entry.name);
-    out.push({
-      kind,
-      absolutePath,
-      relativePath: toRelative(projectRoot, absolutePath),
-      contentHash: hashContent(readFileSync(absolutePath)),
-      parentSObject,
-    });
+  return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+// Non-dot files directly in dir whose name ends with suffix.
+async function directFiles(dir: string, suffix: string): Promise<string[]> {
+  if (!safeIsDirectory(dir)) return [];
+  const files: string[] = [];
+  for (const entry of await sortedEntries(dir)) {
+    if (entry.isFile() && !entry.name.startsWith(".") && entry.name.endsWith(suffix)) {
+      files.push(join(dir, entry.name));
+    }
   }
+  return files;
+}
+
+// Non-dot files in dir and in its subfolders at any depth. Dot directories and node_modules
+// are not entered.
+async function filesBelow(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await sortedEntries(dir)) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!isSkippedDirectory(entry.name)) files.push(...(await filesBelow(abs)));
+    } else if (entry.isFile() && !entry.name.startsWith(".")) {
+      files.push(abs);
+    }
+  }
+  return files;
 }
 
 function safeIsFile(path: string): boolean {
