@@ -133,17 +133,35 @@ Claude also loads a skill by itself when the question matches. To use the skills
 
 ### Skill evals
 
-`plugins/spindle/evals` is a `claude plugin eval` suite (Claude Code 2.1.269 or later). Each case copies the sample SFDX project into an empty workspace, asks one question, and grades the answer: the names that must be in it, the tools that must be called, and a rubric that a judge model applies. Each case runs with the plugin and without it.
+`plugins/spindle/evals` is a `claude plugin eval` suite (Claude Code 2.1.269 or later). Each case builds an SFDX project in an empty workspace, asks one question, and grades the answer: the names that must be in it, the tools that must be called, and a rubric that a judge model applies. Each case runs with the plugin and without it.
+
+| Cases | Project | What they test |
+|---|---|---|
+| `blast-radius-*`, `dependencies-*`, `graph-reference-cypher`, `index-projects-workspace` | The sample project (35 files) | Each skill gives a correct answer |
+| `scale-field-delete`, `scale-transitive-callers` | A generated billing project (about 200 classes, 466 files) | Precision when a text search also hits decoys: a field with the same name on another object, a method with the same name in another class, the target name in comments and strings |
 
 ```bash
-bun run eval:skills                      # all cases, 3 runs for each arm
-bun run eval:skills -- --runs 1          # one run for each arm
-bun run eval:skills -- --case 'blast-*'  # one skill
+bun run eval:skills                         # all cases, 3 runs for each arm
+bun run eval:skills -- --runs 1             # one run for each arm
+bun run eval:skills -- --case 'scale-*'     # the larger project only
+bun run eval:skills -- --model claude-haiku-5-5
 ```
 
-The script builds `dist/sfdx-graph-mcp` and puts it first on `PATH`, so the cases test the code of the checkout, not an installed release. Each run is a model call on your account; one run of each arm for all six cases cost about 2 USD at list price. Results go to `plugins/spindle/evals/results/` (not committed).
+The script builds `dist/sfdx-graph-mcp` and puts it first on `PATH`, so the cases test the code of the checkout, not an installed release. Each run is a model call on your account: one run of each arm for the six sample-project cases cost about 2 USD at list price with the default model. Results go to `plugins/spindle/evals/results/` (not committed).
 
-Read the difference between the two arms with care. The sample project has 35 files, so an agent with no graph can read all of it and gets the same score on four of the six cases. The cases prove that the answers with the plugin are correct; they do not yet measure the gain on a large project.
+The generated project has known answers by construction (`plugins/spindle/evals/_shared/scale-project.ts`). `test/evals/scale-fixture.test.ts` checks that the graph returns exactly those answers, so a change to the indexer cannot make the graders wrong without a test failure.
+
+Measured on 2026-11-23 (2 runs for each arm on the `scale-*` cases, 1 run on the others):
+
+| Model | Cases | With plugin | Without plugin |
+|---|---|---|---|
+| Default | 6 sample-project cases | 1.00 on all | 1.00 on four, 0.67 and 0.33 on the two that need the graph |
+| Default | `scale-field-delete` | 1.00 | 1.00 |
+| Default | `scale-transitive-callers` | 1.00, 11 to 12 turns | 1.00, 12 to 13 turns |
+| Haiku 5.5 | `scale-field-delete` | 1.00 | 0.83 (one Apex user of the field not found) |
+| Haiku 5.5 | `scale-transitive-callers` | 1.00, 13 to 14 turns | 1.00, 21 to 23 turns |
+
+Read these numbers as they are. The suite proves that answers with the plugin are correct. At 200 classes, the default model gets the same score with text search alone; the gain shows with a smaller model. A measured gain for the default model needs a larger project than this suite has.
 
 When you change a skill or a tool description, add or change a case first, see it fail, then make the change.
 

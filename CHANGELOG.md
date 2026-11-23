@@ -76,8 +76,10 @@ follow SemVer once a v1.0 binary ships.
   `dependencies`, `index-projects` and `graph-reference`. The plugin declares the MCP
   server. Install it with `claude plugin marketplace add Marceswan/Spindle`, then
   `claude plugin install spindle@spindle`.
-- **Eval suite for the skills** (`plugins/spindle/evals`, `bun run eval:skills`): six
-  `claude plugin eval` cases against the sample project, with and without the plugin.
+- **Eval suite for the skills** (`plugins/spindle/evals`, `bun run eval:skills`): eight
+  `claude plugin eval` cases, with and without the plugin. Six use the sample project. Two
+  use a generated project of about 200 classes with known answers and decoys;
+  `test/evals/scale-fixture.test.ts` checks those answers against the graph.
 - **`trace_references` `include_members`.** A reference to a method or a field does not
   target its class or object. With `include_members: true` the trace also starts from the
   methods, properties and inner types of an Apex class or interface, or from the fields,
