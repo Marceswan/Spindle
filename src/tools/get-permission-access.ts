@@ -6,6 +6,7 @@
 import { GraphStore } from "../graph/store.ts";
 import { EdgeType } from "../model/edge-types.ts";
 import { NodeLabel } from "../model/node-labels.ts";
+import { projectNotIndexedMessage } from "../graph/queries.ts";
 
 export const name = "get_permission_access";
 
@@ -73,6 +74,9 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
   if (target === null || typeof target !== "object" || typeof target.qualified_name !== "string") {
     return { error: "target must be an object with type and qualified_name" };
   }
+
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) return { error: notIndexed };
 
   // Salesforce API names are not case-sensitive, so the target name matches in any case.
   const edgeType = targetToEdge[target.type];

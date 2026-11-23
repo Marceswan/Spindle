@@ -21,6 +21,7 @@ import type { GraphStore } from "../graph/store.ts";
 import { parseCypher } from "../graph/cypher/parser.ts";
 import { planQuery } from "../graph/cypher/planner.ts";
 import { executeQuery } from "../graph/cypher/executor.ts";
+import { projectNotIndexedMessage } from "../graph/queries.ts";
 
 export const name = "query_graph";
 
@@ -101,6 +102,16 @@ const UNSUPPORTED_PATTERNS: Array<{ pattern: RegExp; message: string; suggestion
     suggestion: "Use count(*) or count(n). For other aggregations, retrieve the rows and aggregate client-side.",
   },
   {
+    pattern: /\btype\s*\(/i,
+    message: "Unsupported: type(r) is not implemented.",
+    suggestion: "Use the edge property: RETURN r.edge_type, or WHERE r.edge_type = 'CALLS'.",
+  },
+  {
+    pattern: /[(\[][^()\[\]]*\{/,
+    message: "Unsupported: inline property maps such as (n:Label {name: 'x'}) are not implemented.",
+    suggestion: "Use a WHERE clause: MATCH (n:Label) WHERE n.name = 'x' RETURN n.",
+  },
+  {
     pattern: /\bCALL\b/i,
     message: "Unsupported: CALL subqueries are not implemented in v0.5.",
     suggestion: "Break into separate query_graph calls.",
@@ -126,6 +137,12 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       const out: ErrorOutput = { error: message, suggestion };
       return out;
     }
+  }
+
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) {
+    const out: ErrorOutput = { error: notIndexed, suggestion: "Call list_projects, then use one of its project ids." };
+    return out;
   }
 
   // Parse

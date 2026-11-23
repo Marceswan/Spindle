@@ -700,11 +700,15 @@ Entry points include: test methods (`@IsTest`), trigger handlers reached from a 
   edge_types?: string[],                   // default: all reference edges
   depth?: number,                          // integer 1 to 5, default 2
   min_confidence?: number,                 // default 0.6
-  limit?: number                           // maximum nodes, start node included; default 500, max 5000
+  limit?: number,                          // maximum nodes, start node included; default 500, max 5000
+  include_members?: boolean,               // also start from the members of the start node; default false
+  detail?: "compact" | "full"              // default compact
 }
 ```
 
-**Output:** `{ nodes, edges, truncated, node_count, edge_count }`. The traversal is breadth-first, so nodes nearer to the start node have priority. It stops when the node count reaches `limit`; `truncated` is then `true`. Only edges whose two end nodes are both in `nodes` are returned. Invalid input (`start`, `direction`, `depth`, `limit`) gives an error that names the parameter.
+`include_members`: a reference to a method or a field targets that member, not its class or object. With `include_members: true` the trace also starts from the methods, properties and inner types of an Apex class or interface, or from the fields, validation rules and record types of an object. A start node that does not exist is an error, not an empty result.
+
+**Output:** `{ nodes, edges, truncated, node_count, edge_count }`. Compact output has, per node, `id`, `label`, `name`, `qualifiedName`, `filePath`, `startLine`, `endLine`, and per edge `id`, `sourceId`, `targetId`, `edgeType`, `confidence`, `sourceLine`, `properties`. The traversal is breadth-first, so nodes nearer to the start node have priority. It stops when the node count reaches `limit`; `truncated` is then `true`. Only edges whose two end nodes are both in `nodes` are returned. Invalid input (`start`, `direction`, `depth`, `limit`) gives an error that names the parameter.
 
 ### 9.7 `get_field_usage`
 
@@ -804,6 +808,10 @@ This is the headline tool. It is the answer to “what breaks if I drop this fie
 **Input:** `{ project_id, query: string, params?: object }`.
 
 **Output:** `{ columns, rows, row_count, truncated, query, warnings }`. When the final `RETURN` has no `LIMIT`, the result has at most 1000 rows (`DEFAULT_ROW_CAP`); `truncated` is then `true` and a warning tells the caller to page with `LIMIT` and `SKIP` or to use `RETURN count(*)`. An explicit `LIMIT` on the final `RETURN` is always obeyed. A `LIMIT` in a `WITH` clause is not a limit on the final result.
+
+Property names: the node columns are `id`, `label`, `name`, `qualified_name`, `file_path`, `start_line`, `end_line`; the edge columns are `id`, `source_id`, `target_id`, `edge_type`, `confidence`, `source_file`, `source_line`. The camelCase forms that the other tools print (`qualifiedName`, `edgeType`) are accepted too. Any other name is read from the parser properties of the node or edge.
+
+All read tools give an error for a `project_id` that is not in the graph.
 
 Shipped in v0.5; the typed tools cover 90%+ of real queries.
 

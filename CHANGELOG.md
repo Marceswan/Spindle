@@ -72,8 +72,24 @@ follow SemVer once a v1.0 binary ships.
   outputs have a `truncated` flag; `trace_references` also has `node_count` and
   `edge_count`, and gives a clear error for invalid input.
 
+- **`trace_references` `include_members`.** A reference to a method or a field does not
+  target its class or object. With `include_members: true` the trace also starts from the
+  methods, properties and inner types of an Apex class or interface, or from the fields,
+  validation rules and record types of an object.
+
 ### Changed
 
+- **Results that a caller can misread now say what is wrong.** Each read tool gives an
+  error for a `project_id` that is not indexed; before, it returned an empty result.
+  `trace_references` gives an error for a start node that does not exist, with the name
+  formats. `query_graph` accepts the camelCase property names that the other tools print
+  (`qualifiedName`, `edgeType`); before, such a name matched nothing and gave zero rows. It
+  names the replacement for `type(r)` and for an inline property map.
+- **`trace_references` output is compact by default** (ids, names, labels, source
+  locations, edge properties). `detail: "full"` gives the output of earlier versions.
+- **`get_field_usage` entries have a `scope`.** `field` is a reference to the field.
+  `object` is a read or write of the parent object with no known field reference. A source
+  with a field-level entry is not listed a second time at object level.
 - **XML values are not converted.** One shared parser reads all metadata XML. A picklist
   value `001` was stored as `1`; a label value `100` was a number; a validation rule whose
   formula is only `true` could not be parsed. Text is now stored as written. Flags are

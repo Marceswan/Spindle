@@ -112,10 +112,10 @@ test("invalid inputs throw errors that name the parameter", async () => {
   } finally { store.close(); }
 });
 
-test("missing start node returns an empty, non-truncated result", async () => {
+test("a start node that does not exist is an error that says how to find the name", async () => {
   const { store, projectId } = hub(1);
   try {
-    const out = (await handler({ project_id: projectId, start: { qualified_name: "Nope" }, direction: "both" }, store)) as Out;
-    expect(out).toMatchObject({ nodes: [], edges: [], truncated: false, node_count: 0, edge_count: 0 });
+    await expect(handler({ project_id: projectId, start: { qualified_name: "Nope" }, direction: "both" }, store))
+      .rejects.toThrow(/No node has the qualified name "Nope".*search_graph/);
   } finally { store.close(); }
 });

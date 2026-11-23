@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 
 import { GraphStore } from "../graph/store.ts";
-import { searchNodes } from "../graph/queries.ts";
+import { projectNotIndexedMessage, searchNodes } from "../graph/queries.ts";
 
 export const name = "get_source_snippet";
 
@@ -37,6 +37,8 @@ type Input = {
 export async function handler(input: unknown, store: GraphStore): Promise<unknown> {
   const { project_id, qualified_name, context_lines } = input as Input;
   const ctx = context_lines ?? 0;
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) return { error: notIndexed };
 
   // Search for the node by qualified name (no label hint).
   const nodes = searchNodes(store, {

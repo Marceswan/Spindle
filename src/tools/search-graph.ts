@@ -2,7 +2,7 @@
 // Filtered structural search over graph nodes.
 
 import { GraphStore } from "../graph/store.ts";
-import { searchNodes } from "../graph/queries.ts";
+import { assertProjectIndexed, searchNodes } from "../graph/queries.ts";
 import type { EdgeType } from "../model/edge-types.ts";
 
 export const name = "search_graph";
@@ -79,6 +79,7 @@ type Input = {
 
 export async function handler(input: unknown, store: GraphStore): Promise<unknown> {
   const i = input as Input;
+  assertProjectIndexed(store, i.project_id);
   const limit = i.limit ?? 50;
   const offset = i.offset ?? 0;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new Error("limit must be an integer from 1 to 500");

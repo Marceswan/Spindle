@@ -19,6 +19,7 @@
 import { GraphStore } from "../graph/store.ts";
 import { EdgeType } from "../model/edge-types.ts";
 import { NodeLabel } from "../model/node-labels.ts";
+import { projectNotIndexedMessage } from "../graph/queries.ts";
 
 export const name = "get_field_usage";
 
@@ -60,6 +61,10 @@ type Usage = {
   file_path: string | null;
   line: number | null;
   context: string;
+  // "field": the source refers to this field. "object": the source reads or writes the
+  // parent object, and no field-level reference is known. An object-level entry is a
+  // possible usage, not a confirmed one.
+  scope: "field" | "object";
 };
 
 type UsageReport = {
@@ -86,6 +91,8 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
   if (typeof field !== "string" || !field.includes(".")) {
     return { error: `field must be in "Object.Field" form (got "${field}")` };
   }
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) return { error: notIndexed };
   const parentSObject = field.slice(0, field.indexOf("."));
 
   const report: UsageReport = {
@@ -160,6 +167,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       file_path: row.source_file,
       line: row.source_line,
       context: row.edge_type,
+      scope: "field",
     };
     if (row.source_label === NodeLabel.LwcBundle) {
       report.lwc_bundles.push(usage);
@@ -230,13 +238,17 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
         EdgeType.DmlOn,
       );
 
+    // A source that has a field-level entry is not listed a second time at object level.
+    const fieldLevelApex = new Set(report.apex_methods.map((usage) => usage.qualified_name));
     for (const row of apexRows) {
+      if (fieldLevelApex.has(row.qualified_name)) continue;
       report.apex_methods.push({
         qualified_name: row.qualified_name,
         name: row.name,
         file_path: row.file_path,
         line: row.source_line,
         context: row.edge_type === EdgeType.SoqlQueries ? "SOQL" : "DML",
+        scope: "object",
       });
     }
 
@@ -268,13 +280,16 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
            AND e.edge_type = ?`,
       )
       .all(project_id, NodeLabel.Flow, NodeLabel.SObject, parentSObject, EdgeType.FlowDmlOn);
+    const fieldLevelFlows = new Set(report.flows.map((usage) => usage.qualified_name));
     for (const row of flowRows) {
+      if (fieldLevelFlows.has(row.qualified_name)) continue;
       report.flows.push({
         qualified_name: row.qualified_name,
         name: row.name,
         file_path: row.file_path,
         line: row.source_line,
         context: row.operation ?? "FLOW_DML",
+        scope: "object",
       });
     }
   }
