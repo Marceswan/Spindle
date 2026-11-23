@@ -4,12 +4,12 @@
 
 import { basename, dirname, join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlNumber, xmlText } from "./xml.ts";
 
 type EmailTemplateXml = {
   EmailTemplate?: {
@@ -18,19 +18,14 @@ type EmailTemplateXml = {
     style?: string;
     type?: string;
     encodingKey?: string;
-    available?: boolean;
-    apiVersion?: number;
+    available?: string;
+    apiVersion?: string;
     description?: string;
     uiType?: string;
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-});
+const xmlParser = createXmlParser();
 
 const FIELD_MERGE = /\{!\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]+)*)\s*\}/g;
 const LABEL_MERGE = /\{!\s*\$Label\.([A-Za-z_][A-Za-z0-9_]*)\s*\}/g;
@@ -54,6 +49,7 @@ export function parseEmailTemplate(
   }
 
   const et = parsed.EmailTemplate ?? {};
+  const subject = xmlText(et.subject);
   const templateName = basename(filePath).replace(/\.email-meta\.xml$/, "");
   const qualifiedName = `${folder}/${templateName}`;
   const totalLines = source.split("\n").length;
@@ -66,13 +62,13 @@ export function parseEmailTemplate(
     endLine: totalLines,
     properties: {
       folder,
-      label: et.name ?? templateName,
-      subject: et.subject ?? null,
-      style: et.style ?? null,
-      type: et.type ?? null,
-      uiType: et.uiType ?? null,
-      apiVersion: et.apiVersion ?? null,
-      available: et.available ?? null,
+      label: xmlText(et.name) ?? templateName,
+      subject: subject ?? null,
+      style: xmlText(et.style) ?? null,
+      type: xmlText(et.type) ?? null,
+      uiType: xmlText(et.uiType) ?? null,
+      apiVersion: xmlNumber(et.apiVersion),
+      available: xmlBool(et.available) ?? null,
     },
   });
 
@@ -86,7 +82,7 @@ export function parseEmailTemplate(
     }
   }
 
-  const scanText = `${et.subject ?? ""}\n${body}`;
+  const scanText = `${subject ?? ""}\n${body}`;
 
   const seenFields = new Set<string>();
   FIELD_MERGE.lastIndex = 0;

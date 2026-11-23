@@ -37,7 +37,7 @@ export type UnresolvedRef =
 
 export type UnresolvedCall = {
   kind: "call";
-  // Method that contains the call site. Null for trigger top-level calls (v0.1 ignores those).
+  // Method that contains the call site. For a call in a trigger body, the trigger's name.
   fromMethodQName: string;
   // Receiver text up to but not including the called method, or null for un-qualified calls.
   receiverText: string | null;

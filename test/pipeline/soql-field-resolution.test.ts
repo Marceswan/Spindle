@@ -74,9 +74,9 @@ describe("SOQL field-list resolution", () => {
     expect(edgeExists(store, projectId, EdgeType.ReferencesField, "findGoldCustomers", "Customer__c.Tier__c")).toBe(true);
   });
 
-  test("AccountService.purge does NOT emit REFERENCES_FIELD for Account.Id (no metadata)", () => {
-    // Account.Id Field node does not exist — pass2 drops the edge cleanly.
-    expect(edgeExists(store, projectId, EdgeType.ReferencesField, "purge", "Account.Id")).toBe(false);
+  test("AccountService.purge emits REFERENCES_FIELD for Account.Id to a placeholder (no metadata)", () => {
+    // No metadata file for Account.Id: pass2 creates a placeholder Field node and keeps the edge.
+    expect(edgeExists(store, projectId, EdgeType.ReferencesField, "purge", "Account.Id")).toBe(true);
   });
 
   test("AccountService.purge still keeps the coarse SOQL_QUERIES edge to Account SObject", () => {

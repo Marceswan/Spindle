@@ -1,0 +1,8 @@
+{
+  "name": "spindle",
+  "description": "Skills for the Spindle SFDX metadata graph: blast radius of a change, dependency questions, project indexing, and a graph reference.",
+  "version": "1.2.0",
+  "author": {
+    "name": "Marceswan"
+  }
+}

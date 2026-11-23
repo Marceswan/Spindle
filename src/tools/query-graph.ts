@@ -21,8 +21,12 @@ import type { GraphStore } from "../graph/store.ts";
 import { parseCypher } from "../graph/cypher/parser.ts";
 import { planQuery } from "../graph/cypher/planner.ts";
 import { executeQuery } from "../graph/cypher/executor.ts";
+import { projectNotIndexedMessage } from "../graph/queries.ts";
 
 export const name = "query_graph";
+
+// Rows returned when the final RETURN has no LIMIT.
+export const DEFAULT_ROW_CAP = 1000;
 
 export const description =
   "Execute a Cypher-subset query against the indexed metadata graph. " +
@@ -31,6 +35,7 @@ export const description =
   "RETURN (whole variables, property projections, grouped count(*)/count(n)), DISTINCT, ORDER BY, LIMIT, SKIP. " +
   "Not supported: UNWIND, variable-length paths (-[*..]-), " +
   "CREATE/MERGE/DELETE/SET (read-only graph), aggregates other than count, CALL subqueries. " +
+  `When the final RETURN has no LIMIT, at most ${DEFAULT_ROW_CAP} rows are returned and truncated is true if more rows exist; add LIMIT and SKIP to page, or RETURN count(*) to count. ` +
   "For unsupported syntax, use the typed tools: search_graph, trace_references, get_field_usage, get_permission_access.";
 
 export const inputSchema = {
@@ -63,6 +68,7 @@ type SuccessOutput = {
   columns: string[];
   rows: unknown[][];
   row_count: number;
+  truncated: boolean;
   query: string;
   warnings: string[];
 };
@@ -96,6 +102,16 @@ const UNSUPPORTED_PATTERNS: Array<{ pattern: RegExp; message: string; suggestion
     suggestion: "Use count(*) or count(n). For other aggregations, retrieve the rows and aggregate client-side.",
   },
   {
+    pattern: /\btype\s*\(/i,
+    message: "Unsupported: type(r) is not implemented.",
+    suggestion: "Use the edge property: RETURN r.edge_type, or WHERE r.edge_type = 'CALLS'.",
+  },
+  {
+    pattern: /[(\[][^()\[\]]*\{/,
+    message: "Unsupported: inline property maps such as (n:Label {name: 'x'}) are not implemented.",
+    suggestion: "Use a WHERE clause: MATCH (n:Label) WHERE n.name = 'x' RETURN n.",
+  },
+  {
     pattern: /\bCALL\b/i,
     message: "Unsupported: CALL subqueries are not implemented in v0.5.",
     suggestion: "Break into separate query_graph calls.",
@@ -121,6 +137,12 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       const out: ErrorOutput = { error: message, suggestion };
       return out;
     }
+  }
+
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) {
+    const out: ErrorOutput = { error: notIndexed, suggestion: "Call list_projects, then use one of its project ids." };
+    return out;
   }
 
   // Parse
@@ -149,13 +171,20 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
 
   // Execute
   try {
-    const result = executeQuery(store, plan, parseResult.query, project_id);
+    const result = executeQuery(store, plan, parseResult.query, project_id, DEFAULT_ROW_CAP);
+    const warnings = [...result.warnings];
+    if (result.truncated) {
+      warnings.push(
+        `Result has only the first ${DEFAULT_ROW_CAP} rows. Add LIMIT and SKIP to page, or RETURN count(*) to count.`,
+      );
+    }
     const out: SuccessOutput = {
       columns: result.columns,
       rows: result.rows,
       row_count: result.rowCount,
+      truncated: result.truncated,
       query,
-      warnings: result.warnings,
+      warnings,
     };
     return out;
   } catch (err) {

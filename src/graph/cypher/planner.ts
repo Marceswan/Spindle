@@ -27,8 +27,13 @@ function access(prop: PropAccess, scope: Scope): string {
   // Identifiers come from the tokenizer, never from string literals.
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(prop.property)) throw new Error("Invalid property identifier");
   const columns = value.kind === "node" ? NODE_COLUMNS : EDGE_COLUMNS;
-  return columns.includes(prop.property)
-    ? `json_extract(${value.expr}, '$.${prop.property}')`
+  // The other tools print column names in camelCase (qualifiedName, edgeType). Accept that
+  // spelling too: an unknown name reads a parser property, finds nothing, and the query
+  // then returns zero rows, which looks the same as "no match".
+  const snake = prop.property.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  const column = columns.includes(prop.property) ? prop.property : columns.includes(snake) ? snake : null;
+  return column !== null
+    ? `json_extract(${value.expr}, '$.${column}')`
     : `json_extract(json_extract(${value.expr}, '$.properties'), '$.${prop.property}')`;
 }
 function literal(lit: Literal, params: SqlPlan["params"]): string {

@@ -3,22 +3,15 @@
 // `component.get("c.X")` in controller JS. See design §6.3.
 
 import { readFileSync } from "node:fs";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { DiscoveredFile } from "../../pipeline/discover.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser } from "../metadata-xml/xml.ts";
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-  preserveOrder: true,
-});
+const xmlParser = createXmlParser({ attributes: true, preserveOrder: true });
 
 type XmlNode = {
   [tag: string]: unknown;

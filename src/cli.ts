@@ -13,6 +13,7 @@ import { connectService } from "./service/client.ts";
 import { registerHook, unregisterHook } from "./hook/register.ts";
 
 import { VERSION } from "./version.ts";
+import { isSourceRun } from "./util/runtime.ts";
 
 const program = new Command();
 
@@ -35,7 +36,7 @@ program
       if (!opts.check) process.stdout.write("Run update --yes to verify and install.\n");
       return;
     }
-    if (import.meta.url.startsWith("file:") && !import.meta.url.includes("/$bunfs/")) throw new Error("Self-update requires the installed compiled binary; refusing to replace the Bun runtime");
+    if (isSourceRun(import.meta.url)) throw new Error("Self-update requires the installed compiled binary; refusing to replace the Bun runtime");
     process.stdout.write(JSON.stringify(await performUpdate({ currentVersion: VERSION, executablePath: process.execPath, ...(opts.to ? { version: opts.to } : {}) }), null, 2) + "\n");
     process.stdout.write("Reconnect MCP clients to load the new executable.\n");
   });
@@ -45,7 +46,7 @@ program
   .description("Restore the executable saved by the previous verified update")
   .requiredOption("--yes", "Restore the backup executable")
   .action(async () => {
-    if (import.meta.url.startsWith("file:") && !import.meta.url.includes("/$bunfs/")) throw new Error("Rollback requires the installed compiled binary");
+    if (isSourceRun(import.meta.url)) throw new Error("Rollback requires the installed compiled binary");
     const { rollbackUpdate } = await import("./update/update.ts");
     process.stdout.write(JSON.stringify(await rollbackUpdate(process.execPath)) + "\n");
   });

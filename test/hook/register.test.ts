@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -173,5 +173,44 @@ describe("unregisterHook", () => {
     unregisterHook({ settingsPath });
     const json = readJson(settingsPath) as { hooks?: unknown };
     expect(json.hooks).toBeUndefined();
+  });
+});
+
+describe("hook ownership and symlinked settings", () => {
+  test("leaves hooks of other tools whose command only contains the subcommand text", () => {
+    const settingsPath = newSettingsPath();
+    const foreign = [
+      "~/hooks/log-session-start-hook.sh",
+      "/usr/local/bin/timer-stop-watch --quiet",
+    ];
+    writeFileSync(settingsPath, JSON.stringify({ hooks: {
+      SessionStart: [{ hooks: [{ type: "command", command: foreign[0] }, { type: "command", command: "bun /old/src/cli.ts session-start-hook" }] }],
+      SessionEnd: [{ hooks: [{ type: "command", command: foreign[1] }, { type: "command", command: "/old/sfdx-graph-mcp stop-watch --cwd /x" }] }],
+    } }));
+    registerHook({ settingsPath, binary: "/opt/spindle/sfdx-graph-mcp" });
+    type Hooks = { hooks: Record<string, { hooks: { command: string }[] }[]> };
+    let json = readJson(settingsPath) as Hooks;
+    expect(json.hooks["SessionStart"]!.flatMap(e => e.hooks.map(h => h.command))).toEqual([foreign[0]!, "/opt/spindle/sfdx-graph-mcp session-start-hook"]);
+    expect(json.hooks["SessionEnd"]!.flatMap(e => e.hooks.map(h => h.command))).toEqual([foreign[1]!]);
+    unregisterHook({ settingsPath });
+    json = readJson(settingsPath) as Hooks;
+    expect(json.hooks["SessionStart"]!.flatMap(e => e.hooks.map(h => h.command))).toEqual([foreign[0]!]);
+    expect(json.hooks["SessionEnd"]!.flatMap(e => e.hooks.map(h => h.command))).toEqual([foreign[1]!]);
+  });
+
+  test("writes through a symlinked settings.json and keeps the link", () => {
+    const real = newSettingsPath();
+    writeFileSync(real, JSON.stringify({ theme: "dark" }));
+    const link = join(tmpdir(), `spindle-settings-link-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    symlinkSync(real, link);
+    try {
+      expect(registerHook({ settingsPath: link, binary: "/opt/spindle/sfdx-graph-mcp" }).changed).toBe(true);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      const json = readJson(real) as { theme: string; hooks: { SessionStart: unknown[] } };
+      expect(json.theme).toBe("dark");
+      expect(json.hooks.SessionStart).toHaveLength(1);
+    } finally {
+      rmSync(link, { force: true });
+    }
   });
 });

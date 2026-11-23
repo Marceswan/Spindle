@@ -112,12 +112,28 @@ describe("get_field_usage tool", () => {
       store,
     ) as FieldUsageReport;
 
-    expect(result.apex_methods).toEqual([]);
+    // Account.Id has no metadata, so direct field-level edges go to a placeholder. They stay;
+    // the indirect SObject-level entries (context "SOQL" or "DML") are the ones that go.
+    expect(result.apex_methods.length).toBeGreaterThan(0);
+    expect(result.apex_methods.filter((u) => u.context === "SOQL" || u.context === "DML")).toEqual([]);
   });
 
   test("preserves WHERE-only SOQL field context", async () => {
     const result = await handler({ project_id: projectId, field: "Customer__c.Tier__c", include_indirect: false }, store) as FieldUsageReport;
     expect(result.apex_methods.some((usage) => usage.context === "SOQL_WHERE")).toBe(true);
+  });
+
+  test("reports the email template that merges the field", async () => {
+    const result = await handler({ project_id: projectId, field: "Customer__c.Email__c", include_indirect: false }, store) as FieldUsageReport;
+    expect(result.email_templates.map((usage) => usage.qualified_name)).toEqual(["Marketing/CustomerWelcome"]);
+    expect(result.coverage.authoritative).toContain("email_templates");
+    expect(result.coverage.pending).not.toContain("email_templates");
+  });
+
+  test("a query in a trigger body is an Apex usage", async () => {
+    // The fixture trigger runs SELECT Id, Name FROM Account.
+    const result = await handler({ project_id: projectId, field: "Account.Name" }, store) as FieldUsageReport;
+    expect(result.apex_methods.some((usage) => usage.qualified_name === "AccountTrigger")).toBe(true);
   });
 
   test("malformed field input returns an error", async () => {

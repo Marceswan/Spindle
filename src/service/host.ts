@@ -1,11 +1,14 @@
 import { Database } from "bun:sqlite";
 import { createServer, type Socket } from "node:net";
 import { randomBytes } from "node:crypto";
-import { writeFileSync, renameSync, unlinkSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { watch, type FSWatcher } from "chokidar";
 import { GraphStore } from "../graph/store.ts";
 import { getDefaultDbPath } from "../util/db-path.ts";
 import { indexProject } from "../pipeline/index-project.ts";
+import { readProjectManifest } from "../pipeline/discover.ts";
+import { isWatchIgnored } from "./watch-ignore.ts";
 import { logger } from "../util/logger.ts";
 import { toolsWithStore } from "./tools.ts";
 import { canonicalDbPath, serviceFiles, SERVICE_PROTOCOL, MAX_FRAME_BYTES } from "./paths.ts";
@@ -40,11 +43,28 @@ export async function runService(rawDbPath = getDefaultDbPath()): Promise<void> 
     return result;
   };
 
+  // The discovery record also lists the watched roots. A clean shutdown removes the file.
+  // A file that is still there at startup is from a service that crashed or was killed;
+  // its roots get their watchers back, so clients that connect again keep a fresh graph.
+  let port = 0;
+  const writeDiscovery = (): void => {
+    if (port === 0) return;
+    const temporary = `${files.discovery}.${process.pid}.tmp`;
+    writeFileSync(temporary, JSON.stringify({ pid: process.pid, port, token, protocol: SERVICE_PROTOCOL, watchRoots: [...watchers.keys()] }), { mode: 0o600 });
+    renameSync(temporary, files.discovery);
+  };
+  const rootsOfStoppedService = (): string[] => {
+    try {
+      const record = JSON.parse(readFileSync(files.discovery, "utf8")) as { watchRoots?: unknown };
+      return Array.isArray(record.watchRoots) ? record.watchRoots.filter((root): root is string => typeof root === "string") : [];
+    } catch { return []; }
+  };
+
   const ensureWatch = (rawRoot: string): string => {
     const root = realpathSync(rawRoot);
     if (watchers.has(root)) return root;
     const watcher = watch(root, {
-      ignored: [/(^|[/\\])\../, "**/node_modules/**", "**/dist/**", "**/build/**"],
+      ignored: (path: string) => isWatchIgnored(root, path),
       ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
     });
     const state = { watcher, timer: null as ReturnType<typeof setTimeout> | null };
@@ -58,6 +78,7 @@ export async function runService(rawDbPath = getDefaultDbPath()): Promise<void> 
         if (!stopping) void enqueue(async () => { await indexProject(root, store, { mode: "incremental" }); }).catch(() => {});
       }, 300);
     });
+    writeDiscovery();
     return root;
   };
 
@@ -75,12 +96,21 @@ export async function runService(rawDbPath = getDefaultDbPath()): Promise<void> 
       if (!stopping && clients.size === 0) armIdle(1000);
     });
     const reply = (id: number, value: { result?: unknown; error?: string }): void => {
-      if (!socket.destroyed) socket.write(JSON.stringify({ id, ...value }) + "\n");
+      if (socket.destroyed) return;
+      let frame = JSON.stringify({ id, ...value }) + "\n";
+      // The client closes the connection when a frame is too large. Send an error
+      // that the caller can act on, not a frame that ends the session.
+      if (Buffer.byteLength(frame) > MAX_FRAME_BYTES) {
+        frame = JSON.stringify({ id, error: "Result is larger than the 32 MB transport limit. Narrow the query, add LIMIT, or page with offset." }) + "\n";
+      }
+      socket.write(frame);
     };
     socket.on("data", (chunk: string) => {
       if (stopping) return;
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) { socket.destroy(); return; }
+      // Character count is a lower bound of the byte count and needs no scan of the buffer.
+      if (buffer.length > MAX_FRAME_BYTES) { socket.destroy(); return; }
+      if (!chunk.includes("\n")) return;
       let newline: number;
       while ((newline = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
@@ -107,15 +137,26 @@ export async function runService(rawDbPath = getDefaultDbPath()): Promise<void> 
             watchers.delete(root);
             if (state.timer) clearTimeout(state.timer);
             await state.watcher.close();
+            writeDiscovery();
             return { stopped: true };
           }
           if (method !== "call") throw new Error(`Unknown service method: ${method}`);
           const call = params as { name: string; arguments?: Record<string, unknown> };
           const tool = toolsWithStore.find(t => t.name === call.name);
           if (!tool) throw new Error(`Unknown tool: ${call.name}`);
-          const args = call.arguments ?? {};
-          // Subscribe before indexing so file changes during indexing are queued.
-          if (call.name === "index_project") ensureWatch(args["project_root"] as string);
+          let args = call.arguments ?? {};
+          if (call.name === "index_project") {
+            // A relative path would resolve against the working directory of this service,
+            // which is that of the first client, not of the caller.
+            if (typeof args["project_root"] !== "string" || !isAbsolute(args["project_root"])) throw new Error("project_root must be an absolute path");
+            // The real path is the project identity: the watcher and the index must agree on it.
+            const root = realpathSync(args["project_root"]);
+            // A directory that is not an SFDX project gets no watcher.
+            readProjectManifest(root);
+            // Subscribe before indexing so file changes during indexing are queued.
+            ensureWatch(root);
+            args = { ...args, project_root: root };
+          }
           return await tool.handler(args, store);
         }).then(result => reply(id, { result }), err => reply(id, { error: String((err as Error).message) }));
       }
@@ -156,9 +197,18 @@ export async function runService(rawDbPath = getDefaultDbPath()): Promise<void> 
     process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal); process.on("SIGHUP", onSignal);
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Shared service failed to bind");
-    const temporary = `${files.discovery}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ pid: process.pid, port: address.port, token, protocol: SERVICE_PROTOCOL }), { mode: 0o600 });
-    renameSync(temporary, files.discovery);
+    const previousRoots = rootsOfStoppedService();
+    port = address.port;
+    writeDiscovery();
+    for (const previous of previousRoots) {
+      try {
+        const root = realpathSync(previous);
+        readProjectManifest(root);
+        ensureWatch(root);
+        // Changes that happened while no service ran.
+        void enqueue(async () => { await indexProject(root, store, { mode: "incremental" }); }).catch(() => {});
+      } catch (err) { logger.debug({ err, root: previous }, "watched root of the stopped service is gone"); }
+    }
     armIdle(10000); // Give the spawning client time to connect.
     logger.info({ pid: process.pid, dbPath }, "shared service ready");
     await finished;

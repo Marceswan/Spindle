@@ -7,33 +7,33 @@
 // `mode` parameter to pick the right node label and root element name.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
-type ClassAccess = { apexClass?: string; enabled?: boolean };
+type ClassAccess = { apexClass?: string; enabled?: string };
 type ObjectPerm = {
   object?: string;
-  allowCreate?: boolean;
-  allowRead?: boolean;
-  allowEdit?: boolean;
-  allowDelete?: boolean;
-  viewAllRecords?: boolean;
-  modifyAllRecords?: boolean;
+  allowCreate?: string;
+  allowRead?: string;
+  allowEdit?: string;
+  allowDelete?: string;
+  viewAllRecords?: string;
+  modifyAllRecords?: string;
 };
-type FieldPerm = { field?: string; readable?: boolean; editable?: boolean };
-type PageAccess = { apexPage?: string; enabled?: boolean };
-type RecordTypeVis = { recordType?: string; visible?: boolean; default?: boolean };
-type UserPerm = { name?: string; enabled?: boolean };
+type FieldPerm = { field?: string; readable?: string; editable?: string };
+type PageAccess = { apexPage?: string; enabled?: string };
+type RecordTypeVis = { recordType?: string; visible?: string; default?: string };
+type UserPerm = { name?: string; enabled?: string };
 
 type PermSetShape = {
   label?: string;
   description?: string;
   license?: string;
-  hasActivationRequired?: boolean;
+  hasActivationRequired?: string;
   classAccesses?: ClassAccess | ClassAccess[];
   objectPermissions?: ObjectPerm | ObjectPerm[];
   fieldPermissions?: FieldPerm | FieldPerm[];
@@ -44,7 +44,7 @@ type PermSetShape = {
 
 type ProfileShape = PermSetShape & {
   userLicense?: string;
-  custom?: boolean;
+  custom?: string;
 };
 
 type RootXml = {
@@ -52,10 +52,7 @@ type RootXml = {
   Profile?: ProfileShape;
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) =>
     name === "classAccesses" ||
     name === "objectPermissions" ||
@@ -101,12 +98,12 @@ export function parsePermissionSetOrProfile(
     startLine: 1,
     endLine: totalLines,
     properties: {
-      label: shape.label ?? fileBase,
-      description: shape.description ?? null,
-      license: shape.license ?? null,
-      hasActivationRequired: shape.hasActivationRequired ?? null,
-      userLicense: mode === "profile" ? (parsed.Profile?.userLicense ?? null) : null,
-      isCustom: mode === "profile" ? (parsed.Profile?.custom ?? null) : true,
+      label: xmlText(shape.label) ?? fileBase,
+      description: xmlText(shape.description) ?? null,
+      license: xmlText(shape.license) ?? null,
+      hasActivationRequired: xmlBool(shape.hasActivationRequired) ?? null,
+      userLicense: mode === "profile" ? (xmlText(parsed.Profile?.userLicense) ?? null) : null,
+      isCustom: mode === "profile" ? (xmlBool(parsed.Profile?.custom) ?? null) : true,
       userPermissions,
     },
   });
@@ -131,15 +128,16 @@ function emitClassGrants(
   raw: ClassAccess | ClassAccess[] | undefined,
 ): void {
   for (const entry of asArray(raw)) {
-    if (entry.apexClass === undefined) continue;
+    const apexClass = xmlText(entry.apexClass);
+    if (apexClass === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.GrantsApexAccess,
       fromQName,
       fromLabel,
-      toQName: entry.apexClass,
+      toQName: apexClass,
       toLabel: NodeLabel.ApexClass,
       confidence: Confidence.Resolved,
-      properties: { enabled: entry.enabled ?? false },
+      properties: { enabled: xmlBool(entry.enabled) ?? false },
     });
   }
 }
@@ -151,21 +149,22 @@ function emitObjectGrants(
   raw: ObjectPerm | ObjectPerm[] | undefined,
 ): void {
   for (const entry of asArray(raw)) {
-    if (entry.object === undefined) continue;
+    const object = xmlText(entry.object);
+    if (object === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.GrantsObjectAccess,
       fromQName,
       fromLabel,
-      toQName: entry.object,
+      toQName: object,
       toLabel: NodeLabel.SObject,
       confidence: Confidence.Resolved,
       properties: {
-        create: entry.allowCreate ?? false,
-        read: entry.allowRead ?? false,
-        edit: entry.allowEdit ?? false,
-        delete: entry.allowDelete ?? false,
-        viewAll: entry.viewAllRecords ?? false,
-        modifyAll: entry.modifyAllRecords ?? false,
+        create: xmlBool(entry.allowCreate) ?? false,
+        read: xmlBool(entry.allowRead) ?? false,
+        edit: xmlBool(entry.allowEdit) ?? false,
+        delete: xmlBool(entry.allowDelete) ?? false,
+        viewAll: xmlBool(entry.viewAllRecords) ?? false,
+        modifyAll: xmlBool(entry.modifyAllRecords) ?? false,
       },
     });
   }
@@ -178,15 +177,16 @@ function emitFieldGrants(
   raw: FieldPerm | FieldPerm[] | undefined,
 ): void {
   for (const entry of asArray(raw)) {
-    if (entry.field === undefined) continue;
+    const field = xmlText(entry.field);
+    if (field === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.GrantsFieldAccess,
       fromQName,
       fromLabel,
-      toQName: entry.field,
+      toQName: field,
       toLabel: NodeLabel.Field,
       confidence: Confidence.Resolved,
-      properties: { read: entry.readable ?? false, edit: entry.editable ?? false },
+      properties: { read: xmlBool(entry.readable) ?? false, edit: xmlBool(entry.editable) ?? false },
     });
   }
 }
@@ -198,15 +198,16 @@ function emitPageGrants(
   raw: PageAccess | PageAccess[] | undefined,
 ): void {
   for (const entry of asArray(raw)) {
-    if (entry.apexPage === undefined) continue;
+    const apexPage = xmlText(entry.apexPage);
+    if (apexPage === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.GrantsVisualforceAccess,
       fromQName,
       fromLabel,
-      toQName: entry.apexPage,
+      toQName: apexPage,
       toLabel: NodeLabel.VisualforcePage,
       confidence: Confidence.Resolved,
-      properties: { enabled: entry.enabled ?? false },
+      properties: { enabled: xmlBool(entry.enabled) ?? false },
     });
   }
 }
@@ -218,15 +219,16 @@ function emitRecordTypeGrants(
   raw: RecordTypeVis | RecordTypeVis[] | undefined,
 ): void {
   for (const entry of asArray(raw)) {
-    if (entry.recordType === undefined) continue;
+    const recordType = xmlText(entry.recordType);
+    if (recordType === undefined) continue;
     result.edges.push({
       edgeType: EdgeType.GrantsRecordTypeAccess,
       fromQName,
       fromLabel,
-      toQName: entry.recordType,
+      toQName: recordType,
       toLabel: NodeLabel.RecordType,
       confidence: Confidence.Resolved,
-      properties: { visible: entry.visible ?? false, default: entry.default ?? false },
+      properties: { visible: xmlBool(entry.visible) ?? false, default: xmlBool(entry.default) ?? false },
     });
   }
 }
@@ -235,8 +237,9 @@ function collectUserPermissions(shape: PermSetShape): { name: string; enabled: b
   const arr = asArray(shape.userPermissions);
   const out: { name: string; enabled: boolean }[] = [];
   for (const entry of arr) {
-    if (entry.name === undefined) continue;
-    out.push({ name: entry.name, enabled: entry.enabled ?? false });
+    const name = xmlText(entry.name);
+    if (name === undefined) continue;
+    out.push({ name, enabled: xmlBool(entry.enabled) ?? false });
   }
   return out;
 }

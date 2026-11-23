@@ -3,24 +3,24 @@
 // across all objects are present in the graph. See design §6.5.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlNumber, xmlText } from "./xml.ts";
 
 type CustomFieldXml = {
   CustomField?: {
     fullName?: string;
     label?: string;
     type?: string;
-    length?: number;
-    precision?: number;
-    scale?: number;
-    required?: boolean;
-    unique?: boolean;
-    externalId?: boolean;
+    length?: string;
+    precision?: string;
+    scale?: string;
+    required?: string;
+    unique?: string;
+    externalId?: string;
     description?: string;
     inlineHelpText?: string;
     formula?: string;
@@ -31,22 +31,19 @@ type CustomFieldXml = {
     summarizedField?: string;
     summaryForeignKey?: string;
     summaryOperation?: string;
-    trackHistory?: boolean;
+    trackHistory?: string;
     defaultValue?: string;
     valueSet?: {
       valueSetDefinition?: {
         value?: { fullName?: string; label?: string }[] | { fullName?: string; label?: string };
-        sorted?: boolean;
+        sorted?: string;
       };
-      restricted?: boolean;
+      restricted?: string;
     };
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) => name === "value",
 });
 
@@ -69,10 +66,13 @@ export function parseFieldMeta(
   }
 
   const cf = parsed.CustomField ?? {};
-  const apiName = cf.fullName ?? basename(filePath, ".field-meta.xml");
+  const apiName = xmlText(cf.fullName) ?? basename(filePath, ".field-meta.xml");
   const qualifiedName = `${parentSObject}.${apiName}`;
 
   const picklistValues = collectPicklistValues(cf);
+  const formula = xmlText(cf.formula);
+  const summaryOperation = xmlText(cf.summaryOperation);
+  const summarizedField = xmlText(cf.summarizedField);
 
   result.nodes.push({
     label: NodeLabel.Field,
@@ -82,26 +82,26 @@ export function parseFieldMeta(
     endLine: source.split("\n").length,
     properties: {
       parentSObject,
-      label: cf.label ?? apiName,
-      type: cf.type ?? null,
-      length: cf.length ?? null,
-      precision: cf.precision ?? null,
-      scale: cf.scale ?? null,
-      required: cf.required ?? false,
-      unique: cf.unique ?? false,
-      externalId: cf.externalId ?? false,
-      formula: cf.formula ?? null,
-      referenceTo: cf.referenceTo ?? null,
-      relationshipName: cf.relationshipName ?? null,
-      deleteConstraint: cf.deleteConstraint ?? null,
-      summarizedField: cf.summarizedField ?? null,
-      summaryForeignKey: cf.summaryForeignKey ?? null,
-      summaryOperation: cf.summaryOperation ?? null,
-      trackHistory: cf.trackHistory ?? false,
+      label: xmlText(cf.label) ?? apiName,
+      type: xmlText(cf.type) ?? null,
+      length: xmlNumber(cf.length),
+      precision: xmlNumber(cf.precision),
+      scale: xmlNumber(cf.scale),
+      required: xmlBool(cf.required) ?? false,
+      unique: xmlBool(cf.unique) ?? false,
+      externalId: xmlBool(cf.externalId) ?? false,
+      formula: formula ?? null,
+      referenceTo: xmlText(cf.referenceTo) ?? null,
+      relationshipName: xmlText(cf.relationshipName) ?? null,
+      deleteConstraint: xmlText(cf.deleteConstraint) ?? null,
+      summarizedField: summarizedField ?? null,
+      summaryForeignKey: xmlText(cf.summaryForeignKey) ?? null,
+      summaryOperation: summaryOperation ?? null,
+      trackHistory: xmlBool(cf.trackHistory) ?? false,
       picklistValues,
       isCustom: apiName.endsWith("__c"),
-      isFormula: cf.formula !== undefined && cf.formula !== null && cf.formula.length > 0,
-      isRollUp: cf.summaryOperation !== undefined && cf.summaryOperation !== null,
+      isFormula: formula !== undefined && formula.length > 0,
+      isRollUp: summaryOperation !== undefined,
     },
   });
 
@@ -109,12 +109,12 @@ export function parseFieldMeta(
   // These reference fields on the related object identified by referenceTo of the lookup.
   // We emit a placeholder edge to the bare field name; pass 3 will resolve fully when the
   // graph is complete. For v0.2 we capture the relationship even if the target is unresolved.
-  if (cf.summarizedField !== undefined && cf.summarizedField !== null) {
+  if (summarizedField !== undefined) {
     result.edges.push({
       edgeType: EdgeType.FormulaReferencesField,
       fromQName: qualifiedName,
       fromLabel: NodeLabel.Field,
-      toQName: cf.summarizedField,
+      toQName: summarizedField,
       toLabel: NodeLabel.Field,
       confidence: Confidence.Heuristic,
       properties: { kind: "rollup-summary" },
@@ -132,7 +132,8 @@ function collectPicklistValues(cf: NonNullable<CustomFieldXml["CustomField"]>): 
   const arr = Array.isArray(raw) ? raw : [raw];
   const out: string[] = [];
   for (const v of arr) {
-    if (v.fullName !== undefined) out.push(v.fullName);
+    const name = xmlText(v.fullName);
+    if (name !== undefined) out.push(name);
   }
   return out;
 }

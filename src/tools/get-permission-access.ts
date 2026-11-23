@@ -6,6 +6,7 @@
 import { GraphStore } from "../graph/store.ts";
 import { EdgeType } from "../model/edge-types.ts";
 import { NodeLabel } from "../model/node-labels.ts";
+import { projectNotIndexedMessage } from "../graph/queries.ts";
 
 export const name = "get_permission_access";
 
@@ -70,7 +71,14 @@ const targetToLabel: Record<TargetType, string> = {
 
 export async function handler(input: unknown, store: GraphStore): Promise<unknown> {
   const { project_id, target } = input as Input;
+  if (target === null || typeof target !== "object" || typeof target.qualified_name !== "string") {
+    return { error: "target must be an object with type and qualified_name" };
+  }
 
+  const notIndexed = projectNotIndexedMessage(store, project_id);
+  if (notIndexed !== null) return { error: notIndexed };
+
+  // Salesforce API names are not case-sensitive, so the target name matches in any case.
   const edgeType = targetToEdge[target.type];
   const targetLabel = targetToLabel[target.type];
   if (edgeType === undefined || targetLabel === undefined) {
@@ -97,7 +105,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
        WHERE e.project_id = ?
          AND e.edge_type = ?
          AND t.label = ?
-         AND t.qualified_name = ?`,
+         AND t.qualified_name = ? COLLATE NOCASE`,
     )
     .all(project_id, edgeType, targetLabel, target.qualified_name);
 

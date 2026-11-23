@@ -2,16 +2,16 @@
 // becomes one node with qualified_name = `c.<fullName>` to match the LWC and VF import
 // conventions (e.g., `@salesforce/label/c.Greeting`).
 
-import { XMLParser } from "fast-xml-parser";
 
 import { NodeLabel } from "../../model/node-labels.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
 type LabelEntry = {
   fullName?: string;
   value?: string;
   language?: string;
-  protected?: boolean;
+  protected?: string;
   shortDescription?: string;
   categories?: string;
 };
@@ -22,10 +22,7 @@ type CustomLabelsXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) => name === "labels",
 });
 
@@ -50,7 +47,7 @@ export function parseCustomLabels(filePath: string, source: string): ParseResult
   const totalLines = source.split("\n").length;
 
   for (const lbl of labels) {
-    const fullName = lbl.fullName;
+    const fullName = xmlText(lbl.fullName);
     if (fullName === undefined || fullName.length === 0) continue;
     const qname = `c.${fullName}`;
     result.nodes.push({
@@ -60,11 +57,11 @@ export function parseCustomLabels(filePath: string, source: string): ParseResult
       startLine: 1,
       endLine: totalLines,
       properties: {
-        value: lbl.value ?? null,
-        language: lbl.language ?? "en_US",
-        protected: lbl.protected ?? false,
-        shortDescription: lbl.shortDescription ?? null,
-        categories: lbl.categories ?? null,
+        value: xmlText(lbl.value) ?? null,
+        language: xmlText(lbl.language) ?? "en_US",
+        protected: xmlBool(lbl.protected) ?? false,
+        shortDescription: xmlText(lbl.shortDescription) ?? null,
+        categories: xmlText(lbl.categories) ?? null,
       },
     });
   }

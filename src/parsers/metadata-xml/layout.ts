@@ -6,17 +6,17 @@
 // derive the parent so we can emit fully-qualified field qnames.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { EdgeType } from "../../model/edge-types.ts";
 import { NodeLabel } from "../../model/node-labels.ts";
 import { Confidence } from "../../model/confidence.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlBool, xmlText } from "./xml.ts";
 
 type LayoutItem = {
   field?: string;
   behavior?: string;
-  emptySpace?: boolean;
+  emptySpace?: string;
   customLink?: string;
 };
 
@@ -37,10 +37,7 @@ type LayoutXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
+const xmlParser = createXmlParser({
   isArray: (name) =>
     name === "layoutSections" ||
     name === "layoutColumns" ||
@@ -85,9 +82,9 @@ export function parseLayout(filePath: string, source: string): ParseResult {
   for (const section of asArray(layout.layoutSections)) {
     for (const column of asArray(section.layoutColumns)) {
       for (const item of asArray(column.layoutItems)) {
-        if (item.field === undefined) continue;
-        if (item.emptySpace === true) continue;
-        const fieldName = item.field;
+        const fieldName = xmlText(item.field);
+        if (fieldName === undefined) continue;
+        if (xmlBool(item.emptySpace) === true) continue;
         const fieldQName = parentSObject !== null
           ? `${parentSObject}.${fieldName}`
           : fieldName;
@@ -98,7 +95,7 @@ export function parseLayout(filePath: string, source: string): ParseResult {
           toQName: fieldQName,
           toLabel: NodeLabel.Field,
           confidence: Confidence.Resolved,
-          properties: { behavior: item.behavior ?? null },
+          properties: { behavior: xmlText(item.behavior) ?? null },
         });
       }
     }

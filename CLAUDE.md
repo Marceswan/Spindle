@@ -85,6 +85,7 @@ Follow section 13 of the design doc. The key directories:
 - `src/graph/store.ts` — the only place that talks to SQLite. All reads and writes go through typed query functions in `graph/queries.ts`.
 - `src/model/` — node label constants, edge type constants, confidence levels. Single source of truth for these strings; never hardcode them at call sites.
 - `src/util/` — keep small; resist the temptation to make this a dumping ground.
+- `plugins/spindle/` — the Claude Code plugin: `skills/<name>/SKILL.md` and the `evals/` suite (`bun run eval:skills`). When a tool's name, input or output changes, update the skills that name it and run the evals. Change a skill only with an eval case that fails first.
 
 ### Naming
 
@@ -215,4 +216,9 @@ A change is done when:
 
 ## Things that have gone wrong before
 
-Empty for now. Add entries as we discover them. If a failure takes more than two iterations to converge, write it down here so the next session doesn't relearn it.
+Add entries as we discover them. If a failure takes more than two iterations to converge, write it down here so the next session doesn't relearn it.
+
+- **Never delete and reinsert the nodes of a file on reparse.** Node ids are the endpoints of edges from other files; `ON DELETE CASCADE` silently removes those edges. Upsert, then delete only the nodes that are gone (`pass1-structural.ts`). `test/pipeline/incremental.test.ts` compares the graph after an incremental index with the graph after a full index; extend it for every new pipeline behavior.
+- **chokidar 4 has no globs.** A string in `ignored` matches one exact path. Use a function (`src/service/watch-ignore.ts`), and test the path relative to the project root, not the absolute path.
+- **A parser-emitted placeholder must not own or replace a real node.** Write it with `store.ensurePlaceholderNode`, never `insertNode`.
+- **Bun compiled executables use `/$bunfs/` on macOS/Linux and `B:/~BUN/` on Windows.** Use `isSourceRun` (`src/util/runtime.ts`); do not test `import.meta.url` inline.

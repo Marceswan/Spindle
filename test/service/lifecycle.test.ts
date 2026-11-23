@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { connectService } from "../../src/service/client.ts";
@@ -122,3 +122,98 @@ test("stdin EOF closes an adapter and its otherwise idle service", async () => {
     rmSync(home, { recursive: true, force: true });
   }
 }, 15000);
+
+test("index_project on a directory that is not an SFDX project leaves no watcher", async () => {
+  const home = mkdtempSync(join(tmpdir(), "spindle-nowatch-"));
+  const client = await connectService(join(home, "graph.db"));
+  try {
+    const plain = join(home, "plain");
+    mkdirSync(plain);
+    await expect(client.request("call", { name: "index_project", arguments: { project_root: plain } })).rejects.toThrow("sfdx-project.json");
+    await expect(client.request("call", { name: "index_project", arguments: {} })).rejects.toThrow("absolute path");
+    await expect(client.request("call", { name: "index_project", arguments: { project_root: "." } })).rejects.toThrow("absolute path");
+    expect((await client.request("status") as { watchers: number }).watchers).toBe(0);
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("a project indexed through a symlink is watched and stored under its real path", async () => {
+  const home = mkdtempSync(join(tmpdir(), "spindle-link-"));
+  const client = await connectService(join(home, "graph.db"));
+  try {
+    const fixture = join(import.meta.dir, "../fixtures/sample-sfdx-project");
+    const link = join(home, "link");
+    symlinkSync(fixture, link);
+    await client.request("call", { name: "index_project", arguments: { project_root: link } });
+    await client.request("call", { name: "index_project", arguments: { project_root: `${fixture}/` } });
+    const { projects } = await client.request("call", { name: "list_projects", arguments: {} }) as { projects: { rootPath: string }[] };
+    expect(projects.map(p => p.rootPath)).toEqual([realpathSync(fixture)]);
+    expect((await client.request("status") as { watchers: number }).watchers).toBe(1);
+  } finally {
+    await client.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("an MCP adapter connects again after its service stops", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const home = mkdtempSync(join(tmpdir(), "spindle-reconnect-"));
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  env["SFDX_GRAPH_HOME"] = home;
+  const mcp = new Client({ name: "reconnect", version: "1" });
+  let servicePid: number | undefined;
+  try {
+    await mcp.connect(new StdioClientTransport({
+      command: process.env["SPINDLE_TEST_BINARY"] ?? process.execPath,
+      args: process.env["SPINDLE_TEST_BINARY"] ? [] : [join(import.meta.dir, "../../src/cli.ts")], env, stderr: "pipe",
+    }));
+    const probe = await connectService(join(home, "graph.db"), false);
+    const { pid } = await probe.request("status") as { pid: number };
+    await probe.close();
+    process.kill(pid, "SIGKILL");
+    await waitForExit(pid);
+    const result = await mcp.callTool({ name: "list_projects", arguments: {} });
+    expect(result.isError).not.toBe(true);
+    const again = await connectService(join(home, "graph.db"), false);
+    servicePid = (await again.request("status") as { pid: number }).pid;
+    await again.close();
+    expect(servicePid).not.toBe(pid);
+    await mcp.close();
+    await waitForExit(servicePid);
+  } finally {
+    await mcp.close();
+    if (servicePid) { try { process.kill(servicePid, "SIGTERM"); } catch { /* already stopped */ } }
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("a service that replaces a killed service watches the same projects", async () => {
+  const home = mkdtempSync(join(tmpdir(), "spindle-rewatch-"));
+  const dbPath = join(home, "graph.db");
+  const first = await connectService(dbPath);
+  let second: Awaited<ReturnType<typeof connectService>> | undefined;
+  try {
+    const fixture = join(import.meta.dir, "../fixtures/sample-sfdx-project");
+    await first.request("call", { name: "index_project", arguments: { project_root: fixture } });
+    const { pid } = await first.request("status") as { pid: number };
+    process.kill(pid, "SIGKILL");
+    await waitForExit(pid);
+    second = await connectService(dbPath);
+    const status = await second.request("status") as { pid: number; watchers: number };
+    expect(status.pid).not.toBe(pid);
+    expect(status.watchers).toBe(1);
+    await second.close();
+    await waitForExit(status.pid);
+    // A clean stop leaves no record, so the next service starts without watchers.
+    const third = await connectService(dbPath);
+    second = third;
+    expect((await third.request("status") as { watchers: number }).watchers).toBe(0);
+  } finally {
+    await first.close();
+    await second?.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 30000);

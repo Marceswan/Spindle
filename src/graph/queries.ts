@@ -73,6 +73,21 @@ export function listProjects(store: GraphStore): ProjectSummary[] {
   });
 }
 
+// A tool that reads a project which is not in the graph returns empty results. The caller
+// cannot tell that from "nothing matches", so each read tool checks the id first.
+export function projectNotIndexedMessage(store: GraphStore, projectId: unknown): string | null {
+  if (typeof projectId === "number" && Number.isSafeInteger(projectId)) {
+    const row = store.db.query<{ id: number }, [number]>("SELECT id FROM projects WHERE id = ?").get(projectId);
+    if (row !== null) return null;
+  }
+  return `Project ${JSON.stringify(projectId)} is not indexed. Call list_projects for the valid project_id values, or index_project to index the project.`;
+}
+
+export function assertProjectIndexed(store: GraphStore, projectId: unknown): void {
+  const message = projectNotIndexedMessage(store, projectId);
+  if (message !== null) throw new Error(message);
+}
+
 // ---------------------------------------------------------------------------
 // Schema summary (§9.4)
 // ---------------------------------------------------------------------------
@@ -366,11 +381,47 @@ export type TraceParams = {
   edgeTypes?: EdgeType[] | undefined;
   depth?: number | undefined;
   minConfidence?: number | undefined;
+  /** Maximum number of nodes to return, start node included. Default: unlimited. */
+  limit?: number | undefined;
+  /**
+   * Also start from the members of the start node: the methods, properties and inner types
+   * of an Apex class or interface, or the fields, validation rules and record types of an
+   * object. References to a member do not target the parent node, so a trace from the
+   * parent alone does not find them.
+   */
+  includeMembers?: boolean | undefined;
 };
+
+const MEMBER_LABELS: Partial<Record<NodeLabel, NodeLabel[]>> = {
+  ApexClass: ["ApexMethod", "ApexProperty", "ApexClass", "ApexInterface", "ApexEnum"],
+  ApexInterface: ["ApexMethod", "ApexProperty", "ApexClass", "ApexInterface", "ApexEnum"],
+  SObject: ["Field", "ValidationRule", "RecordType"],
+};
+
+// Members have the qualified name of their parent as a prefix: `Class.method()`, `Object.Field`.
+function getMemberNodes(store: GraphStore, parent: StoredNode): StoredNode[] {
+  const labels = MEMBER_LABELS[parent.label];
+  if (labels === undefined) return [];
+  const prefix = `${parent.qualifiedName}.`;
+  // substr, not LIKE: `_` in an API name such as Customer__c is a LIKE wildcard.
+  const rows = store.db
+    .query<RawNodeRow, (number | string)[]>(
+      `SELECT id, project_id, label, name, qualified_name,
+              file_path, start_line, end_line, properties, content_hash
+       FROM nodes
+       WHERE project_id = ? AND label IN (${labels.map(() => "?").join(",")})
+         AND substr(qualified_name, 1, length(?)) = ?
+       ORDER BY id`,
+    )
+    .all(parent.projectId, ...labels, prefix, prefix);
+  return rows.map(toStoredNode);
+}
 
 export type TraceResult = {
   nodes: StoredNode[];
   edges: StoredEdge[];
+  /** True when the node limit stopped the traversal and more nodes or edges existed. */
+  truncated: boolean;
 };
 
 type RawEdgeRow = {
@@ -411,6 +462,8 @@ function toStoredEdge(row: RawEdgeRow): StoredEdge {
 export function traceReferences(store: GraphStore, params: TraceParams): TraceResult {
   const maxDepth = Math.min(params.depth ?? 2, 5);
   const minConf = params.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
+  const limit = params.limit ?? Number.POSITIVE_INFINITY;
+  let truncated = false;
 
   // Find start node.
   let startNode: StoredNode | null = null;
@@ -428,7 +481,7 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
   }
 
   if (startNode === null) {
-    return { nodes: [], edges: [] };
+    return { nodes: [], edges: [], truncated: false };
   }
 
   const visitedNodeIds = new Set<number>();
@@ -438,6 +491,15 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
   visitedNodeIds.add(startNode.id);
 
   let frontier: number[] = [startNode.id];
+  if (params.includeMembers) {
+    for (const member of getMemberNodes(store, startNode)) {
+      if (visitedNodeIds.has(member.id)) continue;
+      if (resultNodes.length >= limit) { truncated = true; break; }
+      visitedNodeIds.add(member.id);
+      resultNodes.push(member);
+      frontier.push(member.id);
+    }
+  }
 
   for (let d = 0; d < maxDepth; d++) {
     const nextFrontier: number[] = [];
@@ -463,6 +525,7 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
                  confidence, properties, source_file, source_line
           FROM edges
           WHERE ${idColumn} = ? AND project_id = ? AND confidence >= ? ${edgeTypePlaceholders}
+          ORDER BY id
         `;
         const bindArgs: (number | string)[] = [nodeId, params.projectId, minConf, ...edgeTypeValues];
 
@@ -471,24 +534,31 @@ export function traceReferences(store: GraphStore, params: TraceParams): TraceRe
         for (const eRow of edgeRows) {
           if (visitedEdgeIds.has(eRow.id)) continue;
           visitedEdgeIds.add(eRow.id);
-          resultEdges.push(toStoredEdge(eRow));
 
           const neighborId: number = eRow[otherColumn as keyof typeof eRow] as number;
           if (!visitedNodeIds.has(neighborId)) {
+            if (resultNodes.length >= limit) {
+              // A node beyond the limit exists; its edge is dropped.
+              truncated = true;
+              continue;
+            }
             visitedNodeIds.add(neighborId);
             const neighborNode = getNodeById(store, neighborId);
             if (neighborNode !== null) {
               resultNodes.push(neighborNode);
               nextFrontier.push(neighborId);
+            } else {
+              continue;
             }
           }
+          resultEdges.push(toStoredEdge(eRow));
         }
       }
     }
 
     frontier = nextFrontier;
-    if (frontier.length === 0) break;
+    if (frontier.length === 0 || truncated) break;
   }
 
-  return { nodes: resultNodes, edges: resultEdges };
+  return { nodes: resultNodes, edges: resultEdges, truncated };
 }

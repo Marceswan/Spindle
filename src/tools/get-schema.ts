@@ -2,7 +2,7 @@
 // Summarize what is in the graph for a project.
 
 import { GraphStore } from "../graph/store.ts";
-import { getSchemaSummary } from "../graph/queries.ts";
+import { assertProjectIndexed, getSchemaSummary } from "../graph/queries.ts";
 
 export const name = "get_schema";
 
@@ -25,6 +25,7 @@ type Input = { project_id: number };
 
 export async function handler(input: unknown, store: GraphStore): Promise<unknown> {
   const { project_id } = input as Input;
+  assertProjectIndexed(store, project_id);
   const summary = getSchemaSummary(store, project_id);
   return summary;
 }

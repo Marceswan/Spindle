@@ -4,11 +4,14 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getDefaultDbPath } from "../util/db-path.ts";
+import { isSourceRun } from "../util/runtime.ts";
 import { canonicalDbPath, serviceFiles, SERVICE_PROTOCOL, MAX_FRAME_BYTES, type ServiceRecord } from "./paths.ts";
 
 export type ServiceClient = {
   request: (method: string, params?: unknown) => Promise<unknown>;
   close: () => Promise<void>;
+  /** True after the connection ends. A closed client cannot be used again. */
+  isClosed: () => boolean;
 };
 
 function readRecord(dbPath: string): ServiceRecord | null {
@@ -35,7 +38,9 @@ async function openConnection(record: ServiceRecord): Promise<ServiceClient> {
   socket.on("close", fail);
   socket.on("data", (data: string) => {
     buffer += data;
-    if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) { socket.destroy(); return; }
+    // Character count is a lower bound of the byte count and needs no scan of the buffer.
+    if (buffer.length > MAX_FRAME_BYTES) { socket.destroy(); return; }
+    if (!data.includes("\n")) return;
     let newline: number;
     while ((newline = buffer.indexOf("\n")) !== -1) {
       const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
@@ -59,6 +64,7 @@ async function openConnection(record: ServiceRecord): Promise<ServiceClient> {
         socket.write(frame);
       });
     },
+    isClosed: () => ended || socket.destroyed,
     async close() {
       if (socket.destroyed) return;
       await new Promise<void>(resolve => {
@@ -90,7 +96,7 @@ export async function connectService(rawDbPath = getDefaultDbPath(), autoStart =
     if (!autoStart) throw new Error("No shared Spindle service is running");
     if (!spawned) {
       // Bun source execution needs the CLI script; compiled executables need only args.
-      const source = import.meta.url.startsWith("file:") && !import.meta.url.includes("/$bunfs/");
+      const source = isSourceRun(import.meta.url);
       const args = [...(source ? [fileURLToPath(new URL("../cli.ts", import.meta.url))] : []), "service", "--db-path", dbPath];
       const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: process.env });
       child.on("error", err => { spawnError = err; });

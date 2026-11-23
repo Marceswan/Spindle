@@ -3,10 +3,10 @@
 // design §6.10.
 
 import { basename } from "node:path";
-import { XMLParser } from "fast-xml-parser";
 
 import { NodeLabel } from "../../model/node-labels.ts";
 import type { ParseResult } from "../apex/types.ts";
+import { createXmlParser, xmlText } from "./xml.ts";
 
 type StaticResourceXml = {
   StaticResource?: {
@@ -16,12 +16,7 @@ type StaticResourceXml = {
   };
 };
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: true,
-  parseTagValue: true,
-  trimValues: true,
-  isArray: () => false,
-});
+const xmlParser = createXmlParser();
 
 export function parseStaticResource(filePath: string, source: string): ParseResult {
   const result: ParseResult = { nodes: [], edges: [], unresolved: [], warnings: [] };
@@ -48,9 +43,9 @@ export function parseStaticResource(filePath: string, source: string): ParseResu
     startLine: 1,
     endLine: totalLines,
     properties: {
-      contentType: sr.contentType ?? null,
-      cacheControl: sr.cacheControl ?? null,
-      description: sr.description ?? null,
+      contentType: xmlText(sr.contentType) ?? null,
+      cacheControl: xmlText(sr.cacheControl) ?? null,
+      description: xmlText(sr.description) ?? null,
     },
   });
 

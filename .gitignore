@@ -27,4 +27,5 @@ dist/
 *.swo
 
 # Test artifacts
+plugins/spindle/evals/results/
 coverage/

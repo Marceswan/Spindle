@@ -13,7 +13,8 @@
     "test": "bun test --timeout 30000",
     "build": "bun build src/cli.ts --compile --outfile dist/sfdx-graph-mcp",
     "start": "bun run src/cli.ts",
-    "bench": "SFDX_GRAPH_LOG_LEVEL=silent bun run bench/cli.ts"
+    "bench": "SFDX_GRAPH_LOG_LEVEL=silent bun run bench/cli.ts",
+    "eval:skills": "bun run build && PATH=\"$PWD/dist:$PATH\" claude plugin eval plugins/spindle --scaffold --allow-real-servers --no-publish --allow-tools 'mcp__plugin_spindle_sfdx-graph__*'"
   },
   "dependencies": {
     "@apexdevtools/apex-parser": "^4.4.0",
