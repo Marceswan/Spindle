@@ -72,6 +72,12 @@ follow SemVer once a v1.0 binary ships.
   outputs have a `truncated` flag; `trace_references` also has `node_count` and
   `edge_count`, and gives a clear error for invalid input.
 
+- **Claude Code plugin with four skills** (`plugins/spindle`): `blast-radius`,
+  `dependencies`, `index-projects` and `graph-reference`. The plugin declares the MCP
+  server. Install it with `claude plugin marketplace add Marceswan/Spindle`, then
+  `claude plugin install spindle@spindle`.
+- **Eval suite for the skills** (`plugins/spindle/evals`, `bun run eval:skills`): six
+  `claude plugin eval` cases against the sample project, with and without the plugin.
 - **`trace_references` `include_members`.** A reference to a method or a field does not
   target its class or object. With `include_members: true` the trace also starts from the
   methods, properties and inner types of an Apex class or interface, or from the fields,

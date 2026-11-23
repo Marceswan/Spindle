@@ -113,6 +113,40 @@ For development without installing the binary, use `bin/sfdx-graph-mcp` (a shim 
 Recommended `CLAUDE.md` snippet to prefer Spindle's tools over grep:
 
 ```
+### Skills for Claude Code
+
+`plugins/spindle` is a Claude Code plugin with four skills that tell Claude how to use the graph. The plugin also declares the MCP server (`sfdx-graph-mcp` must be on your `PATH`), so you do not need the manual MCP configuration above when you install it.
+
+```bash
+claude plugin marketplace add Marceswan/Spindle
+claude plugin install spindle@spindle
+```
+
+| Skill | Use it for |
+|---|---|
+| `/spindle:blast-radius` | What breaks when a field, object, class, method or Flow changes: what to change together, what to retest, who has access, and what the graph cannot show |
+| `/spindle:dependencies` | What depends on X, what X depends on, how A is connected to B, which methods have no callers |
+| `/spindle:index-projects` | Find each SFDX project in the workspace and index it. The SessionStart hook indexes only the project at the working directory. |
+| `/spindle:graph-reference` | Qualified-name formats, edge types and directions, and the Cypher subset of `query_graph` |
+
+Claude also loads a skill by itself when the question matches. To use the skills from a checkout with no install: `claude --plugin-dir plugins/spindle`.
+
+### Skill evals
+
+`plugins/spindle/evals` is a `claude plugin eval` suite (Claude Code 2.1.269 or later). Each case copies the sample SFDX project into an empty workspace, asks one question, and grades the answer: the names that must be in it, the tools that must be called, and a rubric that a judge model applies. Each case runs with the plugin and without it.
+
+```bash
+bun run eval:skills                      # all cases, 3 runs for each arm
+bun run eval:skills -- --runs 1          # one run for each arm
+bun run eval:skills -- --case 'blast-*'  # one skill
+```
+
+The script builds `dist/sfdx-graph-mcp` and puts it first on `PATH`, so the cases test the code of the checkout, not an installed release. Each run is a model call on your account; one run of each arm for all six cases cost about 2 USD at list price. Results go to `plugins/spindle/evals/results/` (not committed).
+
+Read the difference between the two arms with care. The sample project has 35 files, so an agent with no graph can read all of it and gets the same score on four of the six cases. The cases prove that the answers with the plugin are correct; they do not yet measure the gain on a large project.
+
+When you change a skill or a tool description, add or change a case first, see it fail, then make the change.
+
 ## SFDX Graph (sfdx-graph-mcp)
 
 Prefer graph tools over Grep/Glob/Read for structural SFDX questions.

@@ -1,0 +1,11 @@
+{
+  "name": "spindle",
+  "owner": { "name": "Marceswan" },
+  "plugins": [
+    {
+      "name": "spindle",
+      "source": "./plugins/spindle",
+      "description": "Skills for the Spindle SFDX metadata graph: blast radius, dependency questions, project indexing."
+    }
+  ]
+}

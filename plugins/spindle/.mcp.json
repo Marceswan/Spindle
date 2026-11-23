@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "sfdx-graph": {
+      "command": "sfdx-graph-mcp"
+    }
+  }
+}
