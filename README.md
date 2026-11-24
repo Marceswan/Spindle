@@ -6,7 +6,7 @@ Spindle replaces grep-and-read loops with single-call graph queries for Salesfor
 
 | | |
 |---|---|
-| **Status** | v1.2.0 — 270 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
+| **Status** | v1.2.0 — 279 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
 | **Headline** | On a 100-class synthetic corpus, returns answers in about 18% of the tokens a grep+read flow would use, about 60x faster. See [Bench headline](#bench-headline) for the method and its limits. |
 | **Distribution** | Single Bun-compiled binary per platform via GitHub Releases. Cross-compile to darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64 validated. Matrix build wired into `.github/workflows/release.yml`. |
 | **License** | MIT |
@@ -71,7 +71,7 @@ Env vars to control behavior:
 git clone https://github.com/Marceswan/Spindle.git
 cd Spindle
 bun install
-bun test                  # 271 tests: 270 pass, 1 skipped
+bun test                  # 280 tests: 279 pass, 1 skipped
 bun run typecheck         # tsc --noEmit
 bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 ```
@@ -358,8 +358,10 @@ and database IDs. `--metadata-only` excludes source hashes. This compares indexe
 source snapshots, not live org state.
 
 Flow extraction now follows typed variables, decisions, assignments, formulas, and
-record operations. Formula references carry heuristic confidence; relationship
-traversal and screen/choice-specific references remain incomplete. SOQL extraction
+record operations. It also reads record fields on screens, the fields of record and
+picklist choice sets, and `{!resource.Field}` merge fields in screen text, choice text
+and text templates. Formula and merge-field references carry regex-level confidence
+(0.6). Relationship traversal (`{!$Record.Owner.Name}`) remains unresolved. SOQL extraction
 uses the Apex parser grammar, including nested queries, filters, grouping, ordering,
 TYPEOF and metadata-resolved relationships. Dynamic query strings remain unresolved;
 `FIELDS()` does not enumerate wildcard fields. These limits appear in index warnings.

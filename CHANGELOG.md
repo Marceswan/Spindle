@@ -56,6 +56,13 @@ follow SemVer once a v1.0 binary ships.
 
 ### Added
 
+- **Flow screens and choice sets are in the graph.** The Flow parser now emits
+  `FLOW_USES_FIELD` for record fields on a screen (`objectFieldReference`, at every nesting
+  level), for the fields of record and picklist choice sets (display, value, sort, filter,
+  output and picklist fields), and for `{!resource.Field}` merge fields in screen text, help
+  text, default values, choice text and text templates. Merge-field edges have confidence
+  0.6. An unbound reference gives an index warning and no edge.
+
 - **Recursive file discovery.** Type folders are found at any depth below each package
   directory, and single-file types are read from subfolders too. Before, only
   `<packageDirectory>/main/default/<type>/` was read, so `force-app/feature-x/classes/` and
