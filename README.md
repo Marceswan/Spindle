@@ -155,6 +155,49 @@ claude plugin install spindle@spindle
 
 Claude also loads a skill by itself when the question matches. To use the skills from a checkout with no install: `claude --plugin-dir plugins/spindle`.
 
+### Blast radius
+
+`/spindle:blast-radius` answers one question before a change: what breaks if this field, object, class, method or Flow changes? Use it before a rename, a type change, a delete or a deprecation. It is a skill, not a tool. It tells Claude which graph tools to call for each kind of target, and how to report the result.
+
+```
+/spindle:blast-radius Customer__c.Email__c
+```
+
+You can also ask in plain words, for example "What breaks if I delete `Customer__c.Email__c`?". Claude loads the skill when the question matches.
+
+**What it calls**
+
+| Target | Calls |
+|---|---|
+| Field | `get_field_usage`, then `get_permission_access` |
+| Object, Apex class or interface | `trace_references` (inbound, depth 1, with members), then `get_permission_access` |
+| Apex method | `trace_references` from `Class.method(ParamType)` (inbound, depth 1) |
+| Flow, LWC, Aura, Visualforce, label, static resource | `trace_references` (inbound, depth 1) |
+
+Depth 1 is the set that can break. For a rename or a delete, the skill also does a text search for the short name, because the graph does not model each reference.
+
+**What the report contains**
+
+| Heading | Content |
+|---|---|
+| Change together | Items that fail to compile or deploy if they do not change with the target |
+| Retest | Items that still deploy, where behavior can change |
+| Access | Permission sets, profiles and permission set groups that grant the target |
+| Not in the graph | What the text search found, and what you must check in the org |
+| Confidence | Each hit with confidence below 1. 0.8 is a name match and 0.6 is a text scan. Read the source before you rely on these hits. |
+
+**What the graph cannot show**
+
+The report names these gaps. It does not hide them.
+
+- Apex calls on a variable (`svc.doThing()`), DML statements, dynamic SOQL and names in strings
+- Interface method declarations and Visualforce action bindings (`action="{!cleanup}"`)
+- Formula field bodies
+- Metadata types that are not indexed: reports, workflow rules, approval processes, sharing rules and custom metadata records
+- Data and configuration that exist only in the org
+
+An empty result is not proof that the target is unused.
+
 ### Skill evals
 
 `plugins/spindle/evals` is a `claude plugin eval` suite (Claude Code 2.1.269 or later). Each case builds an SFDX project in an empty workspace, asks one question, and grades the answer: the names that must be in it, the tools that must be called, and a rubric that a judge model applies. Each case runs with the plugin and without it.
