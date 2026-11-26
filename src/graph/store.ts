@@ -376,6 +376,18 @@ export class GraphStore {
     this.db.query("DELETE FROM file_hashes WHERE project_id = ? AND file_path = ?").run(projectId, filePath);
   }
 
+  /** The `@RestResource` urlMapping values of the Apex classes in one file, sorted. */
+  getRestUrlMappingsForFile(projectId: number, filePath: string): string[] {
+    return this.db
+      .query<{ mapping: string }, [number, string]>(
+        `SELECT json_extract(properties, '$.restUrlMapping') AS mapping FROM nodes
+         WHERE project_id = ? AND file_path = ? AND json_extract(properties, '$.restUrlMapping') IS NOT NULL
+         ORDER BY 1`,
+      )
+      .all(projectId, filePath)
+      .map((row) => row.mapping);
+  }
+
   /** Files that have, or once had, an edge into a node of one of the target files. */
   getReferringFiles(projectId: number, targetFiles: string[]): Set<string> {
     const out = new Set<string>();

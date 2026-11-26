@@ -12,7 +12,9 @@ export const CURRENT_SCHEMA_VERSION = 1;
 // binaries unreliable: the store then drops the file hashes and each project gets one
 // complete reparse. This is not a schema change. Older binaries ignore the value.
 //   1: stable node ids on reparse, ownerless placeholders, removal of deleted files.
-export const CURRENT_DATA_EPOCH = 1;
+//   2: `restUrlMapping` on Apex class nodes. An Apex REST path in a UI bundle is resolved
+//      by this property, and a class that did not change would not get it.
+export const CURRENT_DATA_EPOCH = 2;
 
 export const SCHEMA_DDL = `
 PRAGMA journal_mode = WAL;

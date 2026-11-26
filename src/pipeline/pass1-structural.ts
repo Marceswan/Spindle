@@ -25,6 +25,9 @@ export type Pass1Result = {
   // references that now resolve differently.
   parsedFiles: Set<string>;
   symbolChangedFiles: string[];
+  // True when the set of Apex REST urlMapping values changed. An Apex REST path in a UI
+  // bundle is resolved by these values, so each UI bundle can then resolve differently.
+  restMappingsChanged: boolean;
 };
 
 function isPlaceholder(node: ParsedNode): boolean {
@@ -44,6 +47,7 @@ export function runPass1(
   const warnings: { file: string; message: string; line: number }[] = [];
   const parsedFiles = new Set<string>();
   const symbolChangedFiles: string[] = [];
+  let restMappingsChanged = false;
 
   for (const file of files) {
     if (!forceReindex) {
@@ -71,6 +75,13 @@ export function runPass1(
     for (const w of parsed.warnings) {
       warnings.push({ file: file.relativePath, message: w.message, line: w.line });
     }
+
+    const mappingsAfter = parsed.nodes
+      .map((node) => node.properties?.["restUrlMapping"])
+      .filter((mapping): mapping is string => typeof mapping === "string")
+      .sort();
+    const mappingsBefore = store.getRestUrlMappingsForFile(projectId, file.absolutePath);
+    if (mappingsBefore.join("\n") !== mappingsAfter.join("\n")) restMappingsChanged = true;
 
     const symbolsChanged = store.transaction(() => {
       const before = new Set(store.getNodeIdsForFile(projectId, file.absolutePath));
@@ -134,5 +145,6 @@ export function runPass1(
     warnings,
     parsedFiles,
     symbolChangedFiles,
+    restMappingsChanged,
   };
 }

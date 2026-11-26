@@ -107,6 +107,7 @@ graph TB
 |`LwcModule`         |`lwc/<name>/<name>.js`                                       |bundle name                             |
 |`LwcTemplate`       |`lwc/<name>/<name>.html`                                     |bundle name                             |
 |`LwcMetaConfig`     |`lwc/<name>/<name>.js-meta.xml`                              |bundle name                             |
+|`UiBundle`          |`uiBundles/<name>/` folder (the `UIBundle` metadata type)    |bundle name                             |
 |`AuraBundle`        |`aura/<name>/` folder                                        |bundle name                             |
 |`AuraComponent`     |`aura/<name>/<name>.cmp`                                     |bundle name                             |
 |`AuraController`    |`aura/<name>/<name>Controller.js`                            |bundle name                             |
@@ -176,6 +177,9 @@ Label-specific properties live in the JSON blob. Examples:
 |`LWC_USES_RESOURCE`          |`LwcModule`                                                                                              |`StaticResource`              |via `@salesforce/resourceUrl` import                                                                                    |
 |`LWC_TEMPLATE_BINDS`         |`LwcTemplate`                                                                                            |`LwcModule`                   |property binding `{property}`                                                                                           |
 |`LWC_INCLUDES_COMPONENT`     |`LwcTemplate`                                                                                            |`LwcBundle`                   |`<c-other-component>` usage                                                                                             |
+|`UI_BUNDLE_USES_OBJECT`      |`UiBundle`                                                                                               |`SObject`                     |UI API GraphQL operation on the object (`operation`: query, aggregate, create, update, delete, describe)               |
+|`UI_BUNDLE_USES_FIELD`       |`UiBundle`                                                                                               |`Field`                       |field in a UI API GraphQL selection, filter, order, group or inline mutation input                                      |
+|`UI_BUNDLE_USES_APEX`        |`UiBundle`                                                                                               |`ApexClass`                   |Apex REST path, resolved by `@RestResource(urlMapping=...)`                                                             |
 |`AURA_USES_APEX`             |`AuraController`                                                                                         |`ApexMethod`                  |server-side action                                                                                                      |
 |`AURA_INCLUDES_COMPONENT`    |`AuraComponent`                                                                                          |`AuraComponent` or `LwcBundle`|                                                                                                                        |
 |`INVOCABLE_FROM_FLOW`        |`Flow`                                                                                                   |`ApexMethod`                  |for `@InvocableMethod` callouts                                                                                         |
@@ -429,6 +433,46 @@ This is the most complex parser. Flow XML is verbose and nests differently per e
 - **Static Resources:** Parse `staticresources/<name>.resource-meta.xml` for content type. The actual resource bytes are ignored.
 - **Email Templates:** Parse `email/...` for the template metadata. The body is scanned for `{!Object.Field}` merge fields and `{!$Label.X}` references.
 - **Named Credentials:** Parse `namedCredentials/<name>.namedCredential-meta.xml`. Apex `HttpRequest` calls referencing `callout:NamedCredential` resolve to these nodes.
+
+### 6.11 UI Bundles (`uiBundles/<name>/`)
+
+A UI bundle is the `UIBundle` metadata type: a React (or other framework) web app project
+that Salesforce hosts. The bundle directory holds `<name>.uibundle-meta.xml`,
+`ui-bundle.json` and the app source at any depth.
+
+- **Discovery:** one `ui-bundle` file for each directory that has the meta file. The
+  bundle files are the meta file, `ui-bundle.json`, and the `.ts`, `.tsx`, `.js`, `.jsx`,
+  `.mjs`, `.cjs`, `.graphql` and `.gql` sources. Not read: `node_modules`, dot directories,
+  the `outputDir` of `ui-bundle.json` (default `dist`), `build`, `coverage`, `e2e`,
+  `__tests__`, `__mocks__`, and `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*` and
+  `*.d.ts` files. The content hash covers each bundle file, so an edit to one source file
+  causes a reparse of the bundle.
+- **Node:** one `UiBundle` node, with `masterLabel`, `description`, `isActive`, `version`
+  and `outputDir`. There is no node for each source file. Each edge has the absolute path
+  of its source file in `properties.sourceFile`, and its line in `source_line`.
+- **GraphQL:** a bundle reads records through the UI API (`uiapi { query { Account { edges
+  { node { ... } } } } }`). The parser reads a document from a `gql` or `graphql` template,
+  from a string or template that names `uiapi`, and from a `.graphql` file. It uses
+  `@babel/parser` for the script and a hand-written GraphQL reader
+  (`src/parsers/ui-bundle/graphql.ts`); there is no new dependency. It emits
+  `UI_BUNDLE_USES_OBJECT` for each object, and `UI_BUNDLE_USES_FIELD` for each field in a
+  selection, a `where`, `orderBy` or `groupBy` argument, an inline mutation input and a
+  mutation `Record` selection. A fragment is found by name in each file of the bundle; its
+  type condition names the object.
+- **Relationships:** a field edge has the properties `soqlObjectPath` and `soqlFieldPath`,
+  with the same meaning as for SOQL, and pass 2 resolves them with the same relationship
+  metadata. A custom parent relationship `X__r` also gives an edge to the lookup `X__c`. A
+  relationship with no metadata in the project gives no edge.
+- **Apex REST:** a string or template that starts with `/services/apexrest/` gives a
+  `UI_BUNDLE_USES_APEX` edge at confidence 0.8. Each `${...}` part becomes `*`. The Apex
+  parser stores `restUrlMapping` on the class node. Pass 2 picks the class with the longest
+  mapping that matches: an exact path, or a prefix for a mapping that ends with `/*`. When
+  the set of mappings changes, an incremental index parses each UI bundle again.
+- **Not read:** a query, filter or mutation input that a variable holds at run time (the
+  object edge then has `runtime: true`, and `get_field_usage` lists it with scope
+  `object`); an Apex REST path that is built in more than one statement; a path with a
+  namespace prefix; UI API REST and Connect REST paths; the `CustomApplication` that makes
+  the bundle visible (`<uiBundle>`), because that metadata type is not indexed.
 
 ## 7. Indexing Pipeline
 
@@ -1426,6 +1470,8 @@ variables and decision/assignment/formula references. It also resolves record fi
 screens, record and picklist choice set fields, and `{!resource.Field}` merge fields in
 text. Formula and merge-field confidence is regex-level (0.6). Relationship traversal is
 not resolved.
+
+React UI bundles (the `UIBundle` metadata type) are indexed: see section 6.11.
 
 Cypher compiles MATCH/OPTIONAL MATCH/WITH into parameterized CTE stages. Optional
 predicates stay in join semantics and WITH resets scope. Node and edge project

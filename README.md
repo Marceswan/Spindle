@@ -6,7 +6,7 @@ Spindle replaces grep-and-read loops with single-call graph queries for Salesfor
 
 | | |
 |---|---|
-| **Status** | v1.2.0 — 279 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
+| **Status** | v1.2.0 — 299 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
 | **Headline** | On a 100-class synthetic corpus, returns answers in about 18% of the tokens a grep+read flow would use, about 60x faster. See [Bench headline](#bench-headline) for the method and its limits. |
 | **Distribution** | Single Bun-compiled binary per platform via GitHub Releases. Cross-compile to darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64 validated. Matrix build wired into `.github/workflows/release.yml`. |
 | **License** | MIT |
@@ -71,7 +71,7 @@ Env vars to control behavior:
 git clone https://github.com/Marceswan/Spindle.git
 cd Spindle
 bun install
-bun test                  # 280 tests: 279 pass, 1 skipped
+bun test                  # 300 tests: 299 pass, 1 skipped
 bun run typecheck         # tsc --noEmit
 bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 ```
@@ -255,7 +255,7 @@ Ten tools live; each handler is a TypeScript file under `src/tools/`.
 | `trace_references` | BFS up to a configurable depth from a start node, in/out/both, filtered by edge type and confidence |
 | `get_source_snippet` | Return source code for a graph node with optional context lines — replaces a separate file Read |
 | `diff_projects` | Paginated semantic comparison of two indexed org source snapshots |
-| `get_field_usage` | Every reference to a field across LWC, VF, validation rules, FlexiPages, layouts, Apex SOQL/DML, and Flows — grouped by usage type with a three-tier `coverage` summary (authoritative / indirect / pending) |
+| `get_field_usage` | Every reference to a field across LWC, VF, validation rules, FlexiPages, layouts, Apex SOQL/DML, Flows and React UI bundles — grouped by usage type with a three-tier `coverage` summary (authoritative / indirect / pending) |
 | `get_permission_access` | Every PermissionSet and Profile that grants access to a given ApexClass / SObject / Field / VisualforcePage / RecordType. Walks PermissionSetGroup membership to surface indirect grants |
 | `query_graph` | Arbitrary openCypher-subset queries (MATCH, WHERE, RETURN, ORDER BY, LIMIT, SKIP, count). For the long-tail questions the typed tools don't cover |
 
@@ -308,6 +308,7 @@ graph TB
         Meta2[Object metadata + CustomLabel<br/>SObject, Field, ValidationRule, RecordType, CustomLabel]
         LWC2[LWC parser<br/>via @lwc/metadata]
         Aura2[Aura parser<br/>handwritten]
+        UiBundle2[React UI bundle parser<br/>UI API GraphQL + Apex REST]
         VF2[Visualforce parser<br/>via @apexdevtools/vf-parser]
         Perm3[Permission graph<br/>PermSet, Profile, PSG +<br/>get_permission_access tool]
         FlexLayout3[FlexiPage + Layout parsers]
@@ -408,6 +409,18 @@ and text templates. Formula and merge-field references carry regex-level confide
 uses the Apex parser grammar, including nested queries, filters, grouping, ordering,
 TYPEOF and metadata-resolved relationships. Dynamic query strings remain unresolved;
 `FIELDS()` does not enumerate wildcard fields. These limits appear in index warnings.
+
+React UI bundles (the `UIBundle` metadata type, under `uiBundles/<name>/`) are in the
+graph. The parser reads the UI API GraphQL documents of a bundle: in a `gql` template, in
+a string that names `uiapi`, and in a `.graphql` file. Each object gets a
+`UI_BUNDLE_USES_OBJECT` edge. Each field in a selection, a filter, an order, a group or an
+inline mutation input gets a `UI_BUNDLE_USES_FIELD` edge, with the source file and the
+line. `get_field_usage` lists these in `ui_bundles`. An Apex REST path
+(`/services/apexrest/...`) gets a `UI_BUNDLE_USES_APEX` edge to the class whose
+`@RestResource(urlMapping=...)` serves the path, at confidence 0.8. Not read: a query,
+filter or mutation input that a variable holds at run time, a path with a namespace
+prefix, and the `CustomApplication` that makes the bundle visible. Build output,
+`node_modules` and test files of a bundle are not indexed.
 
 Cypher supports repeated `MATCH`, `OPTIONAL MATCH`, and `WITH` stages, nullable
 optional bindings, aliases, `DISTINCT`, `count` grouping, and stage pagination.

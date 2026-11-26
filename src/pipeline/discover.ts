@@ -16,6 +16,7 @@ export type DiscoveredFileKind =
   | "record-type-meta"
   | "lwc-bundle"
   | "aura-bundle"
+  | "ui-bundle"
   | "vf-page"
   | "vf-component"
   | "custom-labels"
@@ -31,7 +32,8 @@ export type DiscoveredFileKind =
 export type BundleFile = {
   // Absolute path of the file on disk.
   absolutePath: string;
-  // File name (basename) — what @lwc/metadata wants in BundleConfig.files.
+  // File name (basename) — what @lwc/metadata wants in BundleConfig.files. For a UI bundle,
+  // the path relative to the bundle directory, with forward slashes.
   fileName: string;
 };
 
@@ -107,7 +109,7 @@ const SINGLE_FILE_TYPES: Record<string, { suffix: string; kind: DiscoveredFileKi
 };
 
 // Type folders that need their own handling (child structure or bundles).
-const SPECIAL_TYPES = new Set(["objects", "email", "aura", "lwc"]);
+const SPECIAL_TYPES = new Set(["objects", "email", "aura", "lwc", "uiBundles"]);
 
 function isTypeFolder(name: string): boolean {
   return name in SINGLE_FILE_TYPES || SPECIAL_TYPES.has(name);
@@ -163,6 +165,7 @@ export async function discoverApexFiles(projectRoot: string): Promise<Discovered
       }
     } else if (name === "objects") await processObjects(dir);
     else if (name === "email") await processEmail(dir);
+    else if (name === "uiBundles") await processUiBundles(dir);
     else await processBundles(dir, name === "lwc" ? "lwc-bundle" : "aura-bundle");
   };
 
@@ -246,6 +249,41 @@ export async function discoverApexFiles(projectRoot: string): Promise<Discovered
     }
   };
 
+  // uiBundles/<name>/<name>.uibundle-meta.xml. A bundle is a full web app project, so its
+  // source files are at any depth. Packages, build output and tests are not source.
+  const processUiBundles = async (bundlesDir: string): Promise<void> => {
+    for (const entry of await sortedEntries(bundlesDir)) {
+      if (!entry.isDirectory()) continue;
+      const bundleDir = join(bundlesDir, entry.name);
+      if (!safeIsFile(join(bundleDir, `${entry.name}.uibundle-meta.xml`))) continue;
+      const skipped = new Set(["dist", "build", "coverage", "e2e", "__tests__", "__mocks__", uiBundleOutputDir(bundleDir)]);
+      const bundleFiles: BundleFile[] = [];
+      const hasher = createHash("sha1");
+      const visit = async (dir: string): Promise<void> => {
+        for (const fe of await sortedEntries(dir)) {
+          const abs = join(dir, fe.name);
+          if (fe.isDirectory()) {
+            if (!isSkippedDirectory(fe.name) && !(skipped.has(fe.name))) await visit(abs);
+          } else if (fe.isFile() && isUiBundleSource(fe.name)) {
+            const fileName = relative(bundleDir, abs).split("\\").join("/");
+            hasher.update(fileName);
+            hasher.update(readFileSync(abs));
+            bundleFiles.push({ absolutePath: abs, fileName });
+          }
+        }
+      };
+      await visit(bundleDir);
+      add({
+        kind: "ui-bundle",
+        absolutePath: bundleDir,
+        relativePath: toRelative(projectRoot, bundleDir),
+        contentHash: hasher.digest("hex"),
+        bundleFiles,
+        bundleName: entry.name,
+      });
+    }
+  };
+
   for (const pkg of manifest.packageDirectories) {
     const pkgRoot = join(projectRoot, pkg.path);
     if (!safeIsDirectory(pkgRoot)) continue;
@@ -253,6 +291,30 @@ export async function discoverApexFiles(projectRoot: string): Promise<Discovered
   }
 
   return out;
+}
+
+const UI_BUNDLE_SOURCE = /\.(tsx?|jsx?|mjs|cjs|mts|cts|graphql|gql)$/;
+const UI_BUNDLE_NOT_SOURCE = /\.(test|spec|stories|config)\.[a-z]+$|\.d\.[cm]?ts$/;
+
+// The files of a UI bundle that the parser reads: the meta file, ui-bundle.json and the
+// script and GraphQL sources. Tests, type declarations and tool configuration are not read.
+function isUiBundleSource(name: string): boolean {
+  if (name.startsWith(".")) return false;
+  if (name.endsWith(".uibundle-meta.xml") || name === "ui-bundle.json") return true;
+  return UI_BUNDLE_SOURCE.test(name) && !UI_BUNDLE_NOT_SOURCE.test(name);
+}
+
+// The build output directory that ui-bundle.json names. The default is "dist".
+function uiBundleOutputDir(bundleDir: string): string {
+  try {
+    const config = JSON.parse(readFileSync(join(bundleDir, "ui-bundle.json"), "utf8")) as { outputDir?: unknown };
+    if (typeof config.outputDir === "string" && config.outputDir !== "") {
+      return config.outputDir.replace(/^\.\//, "").split("/")[0] as string;
+    }
+  } catch {
+    // No configuration file, or one that does not parse: use the default.
+  }
+  return "dist";
 }
 
 // Directory entries sorted by name, so discovery order does not depend on the file system.

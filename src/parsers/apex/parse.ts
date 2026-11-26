@@ -163,6 +163,7 @@ function walkClass(
       implementsInterfaces: implementsNames,
       isTest,
       annotations,
+      ...restUrlMappingProperty(modifiers),
       isInner: parentQName !== null,
       parentQName,
     },
@@ -735,6 +736,18 @@ function collectAnnotations(modifiers: ModifierContext[]): string[] {
     if (a !== undefined) out.push(annotationName(a));
   }
   return out;
+}
+
+// `@RestResource(urlMapping='/orders/*')` -> { restUrlMapping: "/orders/*" }. A reference to
+// an Apex REST path (from a UI bundle) is resolved to the class by this value.
+function restUrlMappingProperty(modifiers: ModifierContext[]): { restUrlMapping?: string } {
+  for (const m of modifiers) {
+    const a = m.annotation();
+    if (a === undefined || annotationName(a).toLowerCase() !== "restresource") continue;
+    const match = /urlMapping\s*=\s*'([^']*)'/i.exec(a.text);
+    if (match !== null) return { restUrlMapping: match[1] as string };
+  }
+  return {};
 }
 
 function annotationName(a: AnnotationContext): string {

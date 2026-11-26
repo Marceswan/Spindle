@@ -121,7 +121,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     throw new Error(
       `No node has the qualified name "${i.start.qualified_name}"${label} in project ${i.project_id}. ` +
       "Names are exact. Find the name with search_graph (name_pattern), then try again. " +
-      "Examples: ApexMethod `Class.method(ParamType)`, LwcBundle `c/name`, Field `Object.Field__c`.",
+      "Examples: ApexMethod `Class.method(ParamType)`, LwcBundle `c/name`, UiBundle `name`, Field `Object.Field__c`.",
     );
   }
 

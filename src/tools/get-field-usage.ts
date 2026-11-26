@@ -8,6 +8,7 @@
 //   - validation_rules: VRs whose formula references the field
 //   - aura_components: pending Aura parser
 //   - flows: pending Flow parser
+//   - ui_bundles: React UI bundles whose UI API GraphQL documents name the field
 //   - layouts: Layout and FlexiPage field placements
 //   - email_templates: merge fields in the subject and body
 //   - permission_sets, profiles: use get_permission_access
@@ -26,8 +27,9 @@ export const name = "get_field_usage";
 export const description =
   "Find every reference to a Salesforce field across all metadata types. The killer query for impact analysis. " +
   "Returns Apex methods that SOQL or DML the parent SObject, LWC bundles importing via @salesforce/schema, " +
-  "Visualforce bindings, validation formulas, layouts, email template merge fields and Flow fields resolved from record variables, " +
-  "decisions, assignments and formulas. Flow relationship traversal and screen/choice field declarations remain incomplete. " +
+  "Visualforce bindings, validation formulas, layouts, email template merge fields, the UI API GraphQL documents of React UI bundles, " +
+  "and Flow fields resolved from record variables, decisions, assignments, formulas, screens and choice sets. " +
+  "Flow relationship traversal is not resolved. A UI bundle query or mutation input that is built at run time is not read. " +
   "Names match without regard to case. A standard field with no metadata file in the project is reported from its references (a placeholder node).";
 
 export const inputSchema = {
@@ -78,6 +80,7 @@ type UsageReport = {
   formula_fields: Usage[];
   aura_components: Usage[];
   flows: Usage[];
+  ui_bundles: Usage[];
   layouts: Usage[];
   permission_sets: Usage[];
   email_templates: Usage[];
@@ -106,13 +109,14 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     formula_fields: [],
     aura_components: [],
     flows: [],
+    ui_bundles: [],
     layouts: [],
     permission_sets: [],
     email_templates: [],
     coverage: {
-      authoritative: ["lwc_bundles", "vf_pages", "vf_components", "validation_rules", "layouts", "email_templates"],
+      authoritative: ["lwc_bundles", "vf_pages", "vf_components", "validation_rules", "layouts", "email_templates", "ui_bundles"],
       indirect: ["apex_methods", "flows"],
-      pending: ["aura_components", "permission_sets", "formula_fields", "flow_relationship_traversal", "flow_screen_choice_fields"],
+      pending: ["aura_components", "permission_sets", "formula_fields", "flow_relationship_traversal", "ui_bundle_runtime_queries"],
     },
   };
 
@@ -126,9 +130,10 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
     source_line: number | null;
     edge_type: string;
     usage_context: string | null;
+    edge_file: string | null;
   };
   const directRows = store.db
-    .query<Row, [number, string, string, string, string, string, string, string, string, string, string, string]>(
+    .query<Row, [number, string, string, string, string, string, string, string, string, string, string, string, string]>(
       `SELECT DISTINCT
          s.label AS source_label,
          s.name AS source_name,
@@ -136,14 +141,15 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
          s.file_path AS source_file,
          e.source_line AS source_line,
          e.edge_type AS edge_type,
-         CASE WHEN s.label IN ('ApexMethod', 'ApexTrigger') THEN json_extract(e.properties, '$.context') END AS usage_context
+         CASE WHEN s.label IN ('ApexMethod', 'ApexTrigger') THEN json_extract(e.properties, '$.context') END AS usage_context,
+         json_extract(e.properties, '$.sourceFile') AS edge_file
        FROM edges e
        JOIN nodes s ON s.id = e.source_id
        JOIN nodes t ON t.id = e.target_id
        WHERE e.project_id = ?
          AND t.label = ?
          AND t.qualified_name = ? COLLATE NOCASE
-         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         AND e.edge_type IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .all(
       project_id,
@@ -158,6 +164,7 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       EdgeType.FlexipageReferencesField,
       EdgeType.FlowUsesField,
       EdgeType.EmailReferencesField,
+      EdgeType.UiBundleUsesField,
     );
 
   for (const row of directRows) {
@@ -183,6 +190,9 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
       report.aura_components.push(usage);
     } else if (row.source_label === NodeLabel.Flow) {
       report.flows.push(usage);
+    } else if (row.source_label === NodeLabel.UiBundle) {
+      // The node of a bundle is its directory. The edge names the source file of the reference.
+      report.ui_bundles.push({ ...usage, file_path: row.edge_file ?? row.source_file });
     } else if (row.source_label === NodeLabel.ApexMethod || row.source_label === NodeLabel.ApexTrigger) {
       // A query in a trigger body belongs to the trigger node; it has no method.
       // Direct REFERENCES_FIELD edge from a parsed SOQL clause. This is the
@@ -289,6 +299,42 @@ export async function handler(input: unknown, store: GraphStore): Promise<unknow
         file_path: row.file_path,
         line: row.source_line,
         context: row.operation ?? "FLOW_DML",
+        scope: "object",
+      });
+    }
+
+    // A UI bundle operation on the parent object where a variable holds the part that can
+    // name a field: a mutation input, or a filter. The field can be in that variable.
+    const bundleRows = store.db
+      .query<FlowRow & { edge_file: string | null }, [number, string, string, string, string]>(
+        `SELECT
+           s.qualified_name AS qualified_name,
+           s.name AS name,
+           s.file_path AS file_path,
+           e.source_line AS source_line,
+           json_extract(e.properties, '$.operation') AS operation,
+           json_extract(e.properties, '$.sourceFile') AS edge_file
+         FROM edges e
+         JOIN nodes s ON s.id = e.source_id
+         JOIN nodes t ON t.id = e.target_id
+         WHERE e.project_id = ?
+           AND s.label = ?
+           AND t.label = ?
+           AND t.qualified_name = ? COLLATE NOCASE
+           AND e.edge_type = ?
+           AND json_extract(e.properties, '$.runtime') = 1`,
+      )
+      .all(project_id, NodeLabel.UiBundle, NodeLabel.SObject, parentSObject, EdgeType.UiBundleUsesObject);
+    const fieldLevelBundles = new Set(report.ui_bundles.map((usage) => `${usage.qualified_name}|${usage.file_path}`));
+    for (const row of bundleRows) {
+      const filePath = row.edge_file ?? row.file_path;
+      if (fieldLevelBundles.has(`${row.qualified_name}|${filePath}`)) continue;
+      report.ui_bundles.push({
+        qualified_name: row.qualified_name,
+        name: row.name,
+        file_path: filePath,
+        line: row.source_line,
+        context: `UI_API_${(row.operation ?? "operation").toUpperCase()}`,
         scope: "object",
       });
     }

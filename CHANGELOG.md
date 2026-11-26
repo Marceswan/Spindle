@@ -56,6 +56,16 @@ follow SemVer once a v1.0 binary ships.
 
 ### Added
 
+- **React UI bundles are in the graph.** The indexer now reads the `UIBundle` metadata type
+  (`uiBundles/<name>/`). One `UiBundle` node stands for a bundle. The parser reads the UI
+  API GraphQL documents of the bundle (`gql` templates, strings that name `uiapi`, and
+  `.graphql` files) and emits `UI_BUNDLE_USES_OBJECT` and `UI_BUNDLE_USES_FIELD` edges,
+  with parent and child relationships resolved from field metadata. An Apex REST path
+  gives a `UI_BUNDLE_USES_APEX` edge to the class whose `@RestResource` `urlMapping`
+  serves it. `get_field_usage` has a new `ui_bundles` list. A query, filter or mutation
+  input that exists only at run time is not read. Existing databases get one automatic
+  complete reparse (data epoch 2).
+
 - **Flow screens and choice sets are in the graph.** The Flow parser now emits
   `FLOW_USES_FIELD` for record fields on a screen (`objectFieldReference`, at every nesting
   level), for the fields of record and picklist choice sets (display, value, sort, filter,

@@ -190,6 +190,29 @@ function soqlResolver(nodes: StoredNode[]): (edge: ParsedEdge) => StoredNode | u
   };
 }
 
+// Finds the Apex class whose `@RestResource(urlMapping=...)` serves an Apex REST path. A
+// mapping is an exact path, or a path that ends with `/*`. The longest mapping that matches
+// wins. A `*` part in the path is a part that the caller builds at run time.
+function apexRestResolver(nodes: StoredNode[]): (path: string) => StoredNode | undefined {
+  const resources: { mapping: string; node: StoredNode }[] = [];
+  for (const node of nodes) {
+    const mapping = node.label === NodeLabel.ApexClass ? node.properties?.["restUrlMapping"] : undefined;
+    if (typeof mapping === "string" && mapping !== "") resources.push({ mapping: mapping.replace(/\/+$/, ""), node });
+  }
+  resources.sort((a, b) => b.mapping.length - a.mapping.length);
+  return (path: string): StoredNode | undefined => {
+    for (const { mapping, node } of resources) {
+      if (mapping.endsWith("/*")) {
+        const prefix = mapping.slice(0, -2);
+        if (path === prefix || path.startsWith(`${prefix}/`)) return node;
+      } else if (path === mapping) {
+        return node;
+      }
+    }
+    return undefined;
+  };
+}
+
 const API_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // The qualified name of the placeholder that an unresolved edge target may get, or null.
@@ -229,6 +252,7 @@ export function runPass2(
   const allNodes = getAllNodesForProject(store, projectId);
   const sym = buildSymbolTable(allNodes);
   const resolveSoql = soqlResolver(allNodes);
+  const resolveApexRest = apexRestResolver(allNodes);
 
   let resolvedCount = 0;
   let unresolvedCount = 0;
@@ -271,6 +295,12 @@ export function runPass2(
         sym.objectOrFieldByLowerQName.set(lowerKey, toNode);
         newPlaceholders.push(toNode);
       }
+    }
+
+    // An Apex REST path names no class: the class is the one whose urlMapping serves the path.
+    const apexRestPath = e.properties?.["apexRestPath"];
+    if (toNode === undefined && e.toLabel === NodeLabel.ApexClass && typeof apexRestPath === "string") {
+      toNode = resolveApexRest(apexRestPath);
     }
 
     // Short-name fallback for ApexMethod targets (LWC@salesforce/apex imports, etc.).

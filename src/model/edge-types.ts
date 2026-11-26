@@ -37,6 +37,12 @@ export const EdgeType = {
   LwcTemplateBinds: "LWC_TEMPLATE_BINDS",
   LwcIncludesComponent: "LWC_INCLUDES_COMPONENT",
 
+  // UI bundles (React apps). The object and field edges come from UI API GraphQL documents;
+  // the Apex edge comes from an Apex REST path.
+  UiBundleUsesObject: "UI_BUNDLE_USES_OBJECT",
+  UiBundleUsesField: "UI_BUNDLE_USES_FIELD",
+  UiBundleUsesApex: "UI_BUNDLE_USES_APEX",
+
   // Aura
   AuraUsesApex: "AURA_USES_APEX",
   AuraIncludesComponent: "AURA_INCLUDES_COMPONENT",

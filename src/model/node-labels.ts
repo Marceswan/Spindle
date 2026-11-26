@@ -17,6 +17,9 @@ export const NodeLabel = {
   LwcTemplate: "LwcTemplate",
   LwcMetaConfig: "LwcMetaConfig",
 
+  // A React (or other framework) app: the UIBundle metadata type.
+  UiBundle: "UiBundle",
+
   AuraBundle: "AuraBundle",
   AuraComponent: "AuraComponent",
   AuraController: "AuraController",

@@ -1,0 +1,25 @@
+query GetOrders($customerId: ID) {
+  uiapi {
+    query {
+      Order__c(first: 10, where: { Customer__r: { Email__c: { eq: "a@b.c" } } }) {
+        edges {
+          node {
+            Id
+            Amount__c @optional { value }
+            Customer__r @optional {
+              Tier__c @optional { value }
+            }
+            What @optional {
+              ... on Customer__c { Nickname__c @optional { value } }
+            }
+          }
+        }
+      }
+    }
+    aggregate {
+      Order__c(groupBy: { Stage__c: { group: true } }, first: 50) {
+        edges { node { aggregate { Total__c @optional { sum { value } } } } }
+      }
+    }
+  }
+}

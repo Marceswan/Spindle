@@ -1,0 +1,4 @@
+{
+  "outputDir": "out",
+  "routing": { "trailingSlash": "never", "fallback": "index.html" }
+}

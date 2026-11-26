@@ -20,6 +20,7 @@ import { parseStaticResource } from "../parsers/metadata-xml/static-resource.ts"
 import { parseEmailTemplate } from "../parsers/metadata-xml/email-template.ts";
 import { parseLwcBundle } from "../parsers/lwc/parse.ts";
 import { parseAuraBundle } from "../parsers/aura/parse.ts";
+import { parseUiBundle } from "../parsers/ui-bundle/parse.ts";
 import { parseVisualforce } from "../parsers/vf/parse.ts";
 import type { ParseResult } from "../parsers/apex/types.ts";
 import type { DiscoveredFile } from "./discover.ts";
@@ -59,6 +60,9 @@ export function parseFile(file: DiscoveredFile): ParseResult {
 
     case "aura-bundle":
       return parseAuraBundle(file);
+
+    case "ui-bundle":
+      return parseUiBundle(file);
 
     case "vf-page":
       return parseVisualforce(file.absolutePath, readSource(file), "vf-page");

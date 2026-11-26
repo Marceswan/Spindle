@@ -83,7 +83,13 @@ export async function indexProject(
   if (!forceReindex) {
     const targets = [...pass1.symbolChangedFiles, ...removedFiles];
     const referring = targets.length > 0 ? store.getReferringFiles(projectId, targets) : new Set<string>();
-    const dependents = files.filter((f) => referring.has(f.absolutePath) && !pass1.parsedFiles.has(f.absolutePath));
+    // A UI bundle refers to an Apex REST class by path, not by name, so the reverse index
+    // does not name the bundle for a class that it did not resolve before.
+    const dependents = files.filter(
+      (f) =>
+        (referring.has(f.absolutePath) || (pass1.restMappingsChanged && f.kind === "ui-bundle")) &&
+        !pass1.parsedFiles.has(f.absolutePath),
+    );
     if (dependents.length > 0) {
       const extra = runPass1(projectId, dependents, store, true);
       pass1.parsedFilesCount += extra.parsedFilesCount;
