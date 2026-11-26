@@ -205,6 +205,7 @@ An empty result is not proof that the target is unused.
 | Cases | Project | What they test |
 |---|---|---|
 | `blast-radius-*`, `dependencies-*`, `graph-reference-cypher`, `index-projects-workspace` | The sample project (35 files) | Each skill gives a correct answer |
+| `blast-radius-ui-bundle`, `graph-reference-ui-bundle` | The sample project plus one React UI bundle | The UI bundle is in the blast radius of an Apex REST class and of a field; Cypher queries use the UI bundle label and edge types |
 | `scale-field-delete`, `scale-transitive-callers` | A generated billing project (about 200 classes, 466 files) | Precision when a text search also hits decoys: a field with the same name on another object, a method with the same name in another class, the target name in comments and strings |
 
 ```bash
