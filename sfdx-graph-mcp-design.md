@@ -1422,8 +1422,10 @@ The roadmap extraction and tooling milestones are implemented. Static SOQL uses 
 existing ANTLR Apex grammar and original source intervals, with clause-aware fields,
 nested scopes, and metadata-backed relationship resolution. Dynamic SOQL and wildcard
 field expansion remain explicit limitations. Flow XML extraction resolves typed record
-variables and decision/assignment/formula references; formula confidence remains
-heuristic and relationship traversal and screen-specific extraction are incomplete.
+variables and decision/assignment/formula references. It also resolves record fields on
+screens, record and picklist choice set fields, and `{!resource.Field}` merge fields in
+text. Formula and merge-field confidence is regex-level (0.6). Relationship traversal is
+not resolved.
 
 Cypher compiles MATCH/OPTIONAL MATCH/WITH into parameterized CTE stages. Optional
 predicates stay in join semantics and WITH resets scope. Node and edge project

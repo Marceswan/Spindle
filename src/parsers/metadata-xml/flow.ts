@@ -1,5 +1,6 @@
-// Flow structure plus statically bound field references. Relationship traversal,
-// screen/choice-specific field declarations and dynamic resource evaluation are not resolved.
+// Flow structure plus statically bound field references. This includes record fields on
+// screens, the fields of record and picklist choice sets, and `{!resource.Field}` merge fields
+// in text. Relationship traversal and dynamic resource evaluation are not resolved.
 
 import { basename } from "node:path";
 
@@ -214,6 +215,9 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 // and `true`/`false` are not references, so literals are never taken for field references.
 const LITERAL_VALUE = /^(?:[+-]?(?:\d|\.\d)|true$|false$)/;
 
+// A merge field in display text: `{!resource}` or `{!resource.Field}`.
+const MERGE_FIELD = /\{!\s*(\$?[A-Za-z_][A-Za-z0-9_.]*)\s*\}/g;
+
 function isLiteral(value: string): boolean {
   return LITERAL_VALUE.test(value.trim());
 }
@@ -226,25 +230,29 @@ function extractFields(
 ): void {
   const seen = new Set<string>();
   const warned = new Set<string>();
-  const referenceKeys = new Set(["elementReference", "assignToReference", "leftValueReference", "rightValueReference", "inputReference"]);
-  const recordSections = new Set(["start", "recordCreates", "recordUpdates", "recordDeletes", "recordLookups"]);
+  const referenceKeys = new Set(["elementReference", "assignToReference", "leftValueReference", "rightValueReference", "inputReference", "objectFieldReference"]);
+  // Keys that name a field of the object that the same element declares.
+  const fieldKeys = new Set(["field", "queriedFields", "sortField", "displayField", "valueField", "picklistField"]);
+  // Keys that hold text for a person to read. A `{!resource.Field}` merge field can occur in it.
+  const mergeTextKeys = new Set(["fieldText", "helpText", "pausedText", "choiceText", "errorMessage", "text", "stringValue"]);
+  const recordSections = new Set(["start", "recordCreates", "recordUpdates", "recordDeletes", "recordLookups", "dynamicChoiceSets"]);
   const warn = (ref: string): void => {
     if (warned.has(ref)) return;
     warned.add(ref);
     result.warnings.push({ message: `Flow ${flowName}: unresolved field reference ${ref} (unknown record binding or relationship traversal)`, line: 0 });
   };
-  const emit = (qname: string, element: string, context: string, formula: boolean): void => {
+  const emit = (qname: string, element: string, context: string, textScan: boolean): void => {
     const key = `${qname}:${element}:${context}`;
     if (seen.has(key)) return;
     seen.add(key);
     result.edges.push({
       edgeType: EdgeType.FlowUsesField, fromQName: flowName, fromLabel: NodeLabel.Flow,
       toQName: qname, toLabel: NodeLabel.Field,
-      confidence: formula ? Confidence.Regex : Confidence.Resolved,
+      confidence: textScan ? Confidence.Regex : Confidence.Resolved,
       properties: { flowElementName: element, context },
     });
   };
-  const resolve = (value: string, element: string, context: string, formula = false): void => {
+  const resolve = (value: string, element: string, context: string, textScan = false): void => {
     const ref = value.trim().replace(/^\{!\s*|\s*\}$/g, "");
     if (isLiteral(ref)) return;
     if (!ref.includes(".")) return; // Scalar resources and record variables aren't fields.
@@ -254,7 +262,7 @@ function extractFields(
       if (!ref.startsWith("$") || ref.startsWith("$Record")) warn(ref);
       return;
     }
-    emit(`${object}.${parts[1]}`, element, context, formula);
+    emit(`${object}.${parts[1]}`, element, context, textScan);
   };
   const walk = (value: unknown, element: string, context: string, object?: string): void => {
     if (Array.isArray(value)) {
@@ -264,7 +272,10 @@ function extractFields(
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
       if (typeof child === "string" && referenceKeys.has(key)) resolve(child, element, context);
-      else if (key === "expression" && typeof child === "string") {
+      else if (typeof child === "string" && mergeTextKeys.has(key)) {
+        // Only the explicit `{!...}` form qualifies. Plain text that looks like a reference does not.
+        for (const merge of child.matchAll(MERGE_FIELD)) resolve(merge[1] ?? "", element, context, true);
+      } else if (key === "expression" && typeof child === "string") {
         if (isLiteral(child)) continue;
         // The shared formula walker is intentionally conservative. Remove literal strings
         // and comments first; only dotted resources with explicit record bindings qualify.
@@ -272,7 +283,7 @@ function extractFields(
         for (const ref of extractFormulaFieldReferences(expression, "")) {
           if (!ref.startsWith(".")) resolve(ref, element, "formula", true);
         }
-      } else if (object && (key === "field" || key === "queriedFields" || key === "sortField")) {
+      } else if (object && fieldKeys.has(key)) {
         for (const field of asArray(child)) {
           if (typeof field !== "string" || isLiteral(field)) continue;
           if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) emit(`${object}.${field}`, element, context, false);
@@ -287,7 +298,9 @@ function extractFields(
       const record = item as Record<string, unknown>;
       const element = typeof record.name === "string" ? record.name : section;
       const object = recordSections.has(section)
-        ? typeof record.object === "string" ? record.object : bindings.get(String(record.inputReference ?? ""))
+        ? typeof record.object === "string" ? record.object
+          : typeof record.picklistObject === "string" ? record.picklistObject
+          : bindings.get(String(record.inputReference ?? ""))
         : undefined;
       walk(item, element, section, object);
     }

@@ -6,8 +6,8 @@ Spindle replaces grep-and-read loops with single-call graph queries for Salesfor
 
 | | |
 |---|---|
-| **Status** | v0.5 + v1.0 distribution — 101 tests passing, 9 MCP tools live, GitHub Actions matrix release wired up |
-| **Headline** | On a 100-class synthetic corpus, returns answers in ~25% of the tokens a grep+read flow would use, ~160x faster |
+| **Status** | v1.2.0 — 279 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
+| **Headline** | On a 100-class synthetic corpus, returns answers in about 18% of the tokens a grep+read flow would use, about 60x faster. See [Bench headline](#bench-headline) for the method and its limits. |
 | **Distribution** | Single Bun-compiled binary per platform via GitHub Releases. Cross-compile to darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64 validated. Matrix build wired into `.github/workflows/release.yml`. |
 | **License** | MIT |
 
@@ -23,7 +23,7 @@ Claude Code (and similar coding agents) currently navigate SFDX projects the sam
 - "Who can run this Apex method" requires joining classes, permission sets, profiles, and permission set groups. Grep returns noise; the answer is a graph traversal.
 - Metadata XML is verbose — reading a single object folder can mean dozens of small files of structural ceremony around one fact.
 
-Spindle indexes the project once into SQLite (~600ms for a 100-class project), then answers structural questions in sub-millisecond graph queries.
+Spindle indexes the project once into SQLite (about 0.3 seconds for a 100-class synthetic project), then answers structural questions in sub-millisecond graph queries.
 
 ---
 
@@ -31,7 +31,8 @@ Spindle indexes the project once into SQLite (~600ms for a 100-class project), t
 
 Search now returns compact symbol evidence by default, with `detail: "full"` for
 parser properties and `has_more` / `next_offset` for complete pagination. On the same
-50-class result page, the included benchmark measures 67.1% fewer output bytes.
+50-class result page, the included benchmark measures 66% to 67% fewer output bytes.
+The byte count changes a little with the length of the temporary path.
 
 All MCP clients, CLI indexing and SessionStart hooks share one local graph service
 per database. Each stdio client keeps a thin adapter; the service owns the database
@@ -70,7 +71,7 @@ Env vars to control behavior:
 git clone https://github.com/Marceswan/Spindle.git
 cd Spindle
 bun install
-bun test                  # 85 tests
+bun test                  # 280 tests: 279 pass, 1 skipped
 bun run typecheck         # tsc --noEmit
 bun run build             # -> dist/sfdx-graph-mcp (single-binary, ~62MB)
 ```
@@ -113,6 +114,29 @@ For development without installing the binary, use `bin/sfdx-graph-mcp` (a shim 
 Recommended `CLAUDE.md` snippet to prefer Spindle's tools over grep:
 
 ```
+## SFDX Graph (sfdx-graph-mcp)
+
+Prefer graph tools over Grep/Glob/Read for structural SFDX questions.
+
+- "Who calls X" or "what does X call":      trace_references
+- "What references this field":             get_field_usage (one call, all metadata types)
+- "Read source for symbol":                 get_source_snippet (preferred over Read for indexed files)
+- "Find Apex methods matching pattern X":   search_graph
+- "Orient me in the project":               get_schema
+
+Run index_project at the start of any non-trivial SFDX task.
+Use Grep only for string literals, comments, or files outside the indexer's coverage.
+```
+
+### SessionStart hook
+
+```bash
+sfdx-graph-mcp register-hook      # add the hook to ~/.claude/settings.json
+sfdx-graph-mcp unregister-hook    # remove it
+```
+
+`register-hook` adds a Claude Code SessionStart hook. At the start of each session, the hook looks for an SFDX project at the working directory and runs an incremental index through the shared service. The graph is then current before the first question. The hook always exits 0, so a project that fails to index does not stop the session. It indexes only the project at the working directory. For other projects in the workspace, use `/spindle:index-projects`.
+
 ### Skills for Claude Code
 
 `plugins/spindle` is a Claude Code plugin with four skills that tell Claude how to use the graph. The plugin also declares the MCP server (`sfdx-graph-mcp` must be on your `PATH`), so you do not need the manual MCP configuration above when you install it.
@@ -130,6 +154,49 @@ claude plugin install spindle@spindle
 | `/spindle:graph-reference` | Qualified-name formats, edge types and directions, and the Cypher subset of `query_graph` |
 
 Claude also loads a skill by itself when the question matches. To use the skills from a checkout with no install: `claude --plugin-dir plugins/spindle`.
+
+### Blast radius
+
+`/spindle:blast-radius` answers one question before a change: what breaks if this field, object, class, method or Flow changes? Use it before a rename, a type change, a delete or a deprecation. It is a skill, not a tool. It tells Claude which graph tools to call for each kind of target, and how to report the result.
+
+```
+/spindle:blast-radius Customer__c.Email__c
+```
+
+You can also ask in plain words, for example "What breaks if I delete `Customer__c.Email__c`?". Claude loads the skill when the question matches.
+
+**What it calls**
+
+| Target | Calls |
+|---|---|
+| Field | `get_field_usage`, then `get_permission_access` |
+| Object, Apex class or interface | `trace_references` (inbound, depth 1, with members), then `get_permission_access` |
+| Apex method | `trace_references` from `Class.method(ParamType)` (inbound, depth 1) |
+| Flow, LWC, Aura, Visualforce, label, static resource | `trace_references` (inbound, depth 1) |
+
+Depth 1 is the set that can break. For a rename or a delete, the skill also does a text search for the short name, because the graph does not model each reference.
+
+**What the report contains**
+
+| Heading | Content |
+|---|---|
+| Change together | Items that fail to compile or deploy if they do not change with the target |
+| Retest | Items that still deploy, where behavior can change |
+| Access | Permission sets, profiles and permission set groups that grant the target |
+| Not in the graph | What the text search found, and what you must check in the org |
+| Confidence | Each hit with confidence below 1. 0.8 is a name match and 0.6 is a text scan. Read the source before you rely on these hits. |
+
+**What the graph cannot show**
+
+The report names these gaps. It does not hide them.
+
+- Apex calls on a variable (`svc.doThing()`), DML statements, dynamic SOQL and names in strings
+- Interface method declarations and Visualforce action bindings (`action="{!cleanup}"`)
+- Formula field bodies
+- Metadata types that are not indexed: reports, workflow rules, approval processes, sharing rules and custom metadata records
+- Data and configuration that exist only in the org
+
+An empty result is not proof that the target is unused.
 
 ### Skill evals
 
@@ -165,20 +232,6 @@ Read these numbers as they are. The suite proves that answers with the plugin ar
 
 When you change a skill or a tool description, add or change a case first, see it fail, then make the change.
 
-## SFDX Graph (sfdx-graph-mcp)
-
-Prefer graph tools over Grep/Glob/Read for structural SFDX questions.
-
-- "Who calls X" or "what does X call":      trace_references
-- "What references this field":             get_field_usage (one call, all metadata types)
-- "Read source for symbol":                 get_source_snippet (preferred over Read for indexed files)
-- "Find Apex methods matching pattern X":   search_graph
-- "Orient me in the project":               get_schema
-
-Run index_project at the start of any non-trivial SFDX task.
-Use Grep only for string literals, comments, or files outside the indexer's coverage.
-```
-
 ### Run the benchmarks
 
 ```bash
@@ -191,7 +244,7 @@ bun run bench --generate --size 1000 --out /tmp/big-corpus
 
 ## MCP tool surface
 
-Nine tools live; each handler is a TypeScript file under `src/tools/`.
+Ten tools live; each handler is a TypeScript file under `src/tools/`.
 
 | Tool | What it answers |
 |---|---|
@@ -232,7 +285,7 @@ graph LR
 
     P4 --> DB[(SQLite Graph<br/>nodes + edges + file_hashes + file_backrefs)]
 
-    DB --> Tools[9 MCP Tools]
+    DB --> Tools[10 MCP Tools]
     Tools --> MCP[MCP stdio Server]
     MCP --> Claude[Claude Code / any MCP client]
 ```
@@ -262,7 +315,7 @@ graph TB
         StaticEmail4[StaticResource + EmailTemplate<br/>parsers]
         Watch4[chokidar watch mode<br/>incremental reindex on file change]
         Cypher5[Cypher query layer<br/>+ query_graph tool]
-        Tools2[9 MCP tools]
+        Tools2[10 MCP tools]
         Bench2[Bench Phase A + B<br/>synthetic corpus + grep baseline]
         Dist1[Cross-platform binaries<br/>+ install.sh / install.ps1<br/>+ GitHub Actions matrix release]
     end
@@ -286,18 +339,28 @@ graph TB
 
 ## Bench headline
 
-A 100-class synthetic corpus (907 nodes, 967 edges, indexed in 1.3 seconds) against the 8 canonical queries:
+Measured on 2026-11-23 with Bun 1.3.8 on an Apple silicon Mac. A 100-class synthetic corpus (919 nodes, indexed in 0.3 seconds) against the 8 canonical queries:
 
 ```
 | Query                                | Spindle (tokens / ms) | Grep+Read (tokens / ms) | Token ratio | Speedup |
-|--------------------------------------|------------------------|--------------------------|-------------|---------|
-| trace-outbound-from-orchestrator-run | 6 / 0.34              | 0 / 75.57                | N/A         | 219x    |
-| get-schema-summary                   | 144 / 1.06            | 845 / 2.19               | 17.0%       | 2.1x    |
-| search-all-apex-classes              | 6248 / 0.46           | 19040 / 77.73            | 32.8%       | 170x    |
-| search-apex-trigger                  | 216 / 0.25            | 0 / 96.51                | N/A         | 392x    |
+|--------------------------------------|-----------------------|-------------------------|-------------|---------|
+| search-method-cleanup                | 15 / 0.84             | 0 / 37.74               | N/A         | 44.7x   |
+| trace-inbound-calls-cleanup          | 1 / 0.40              | 0 / 11.64               | N/A         | 29.4x   |
+| trace-outbound-from-orchestrator-run | 1 / 0.08              | 0 / 11.52               | N/A         | 138.8x  |
+| get-schema-summary                   | 169 / 0.34            | 845 / 0.70              | 20.0%       | 2.1x    |
+| get-source-snippet-cleanup           | 13 / 0.54             | 0 / 9.58                | N/A         | 17.7x   |
+| search-all-apex-classes              | 3079 / 0.15           | 19040 / 10.37           | 16.2%       | 68.6x   |
+| search-apex-interface                | 15 / 0.10             | 0 / 10.55               | N/A         | 106.5x  |
+| search-apex-trigger                  | 151 / 0.09            | 0 / 9.34                | N/A         | 108.5x  |
 ```
 
-Across queries with non-zero grep tokens: **Spindle uses 24.9% of grep's tokens on average and is 148x faster.** N/A ratios are queries whose hand-fixture-derived grep patterns happen to match zero bytes in the synthetic corpus — see `bench/README.md` for the methodology.
+**Spindle uses 18.1% of grep's tokens on average and is about 60x faster** (65x and 57x in two runs).
+
+Read these numbers with their limits:
+
+- The token average uses only the two queries where the grep baseline returns output. For the other six, the grep patterns come from the hand-made fixture and match nothing in the synthetic corpus, so the ratio is N/A.
+- Token counts are an estimate: bytes divided by 4.
+- Times are for the tool handler alone. They change from run to run and from machine to machine.
 
 Run `bun run bench --compare --size 1000` for a 1000-class corpus.
 
@@ -331,15 +394,17 @@ The read-only browser UI prints a private loopback URL. It supports symbol searc
 source evidence, inbound references, and snapshot comparison through the shared
 service. Closing it disconnects its client; other clients keep their service session.
 
-`diff_projects` is the tenth MCP tool. Index two retrieved org source directories in
+`diff_projects` compares two snapshots. Index two retrieved org source directories in
 the same database, then compare their project IDs. Results are paginated and compare
 API names, properties, source hashes, and relationships while ignoring local paths
 and database IDs. `--metadata-only` excludes source hashes. This compares indexed
 source snapshots, not live org state.
 
 Flow extraction now follows typed variables, decisions, assignments, formulas, and
-record operations. Formula references carry heuristic confidence; relationship
-traversal and screen/choice-specific references remain incomplete. SOQL extraction
+record operations. It also reads record fields on screens, the fields of record and
+picklist choice sets, and `{!resource.Field}` merge fields in screen text, choice text
+and text templates. Formula and merge-field references carry regex-level confidence
+(0.6). Relationship traversal (`{!$Record.Owner.Name}`) remains unresolved. SOQL extraction
 uses the Apex parser grammar, including nested queries, filters, grouping, ordering,
 TYPEOF and metadata-resolved relationships. Dynamic query strings remain unresolved;
 `FIELDS()` does not enumerate wildcard fields. These limits appear in index warnings.

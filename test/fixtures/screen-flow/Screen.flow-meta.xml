@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+  <apiVersion>65.0</apiVersion><status>Active</status><processType>Flow</processType>
+  <variables><name>customer</name><dataType>SObject</dataType><objectType>Customer__c</objectType><isCollection>false</isCollection></variables>
+  <variables><name>pickedEmail</name><dataType>String</dataType></variables>
+  <screens>
+    <name>EditCustomer</name>
+    <helpText>Check {!customer.Phone__c} before you continue.</helpText>
+    <fields><name>EmailInput</name><fieldType>ObjectProvided</fieldType><objectFieldReference>customer.Email__c</objectFieldReference></fields>
+    <fields><name>Intro</name><fieldType>DisplayText</fieldType><fieldText>&lt;p&gt;Tier: {!customer.Tier__c} at {!$Flow.CurrentDateTime}&lt;/p&gt;</fieldText></fields>
+    <fields>
+      <name>Columns</name><fieldType>RegionContainer</fieldType>
+      <fields><name>Column1</name><fieldType>Region</fieldType>
+        <fields><name>NameInput</name><fieldType>ObjectProvided</fieldType><objectFieldReference>customer.Name</objectFieldReference></fields>
+      </fields>
+    </fields>
+    <fields><name>Notes</name><fieldType>InputField</fieldType><dataType>String</dataType><defaultValue><stringValue>Contact {!customer.Contact_Name__c}</stringValue></defaultValue></fields>
+    <fields><name>PickCustomer</name><fieldType>DropdownBox</fieldType><choiceReferences>CustomerChoices</choiceReferences><choiceReferences>TierChoices</choiceReferences><choiceReferences>FixedChoice</choiceReferences></fields>
+  </screens>
+  <dynamicChoiceSets>
+    <name>CustomerChoices</name><dataType>String</dataType><object>Customer__c</object>
+    <displayField>Display_Name__c</displayField><valueField>External_Id__c</valueField><sortField>Sort_Key__c</sortField>
+    <filters><field>Active__c</field><operator>EqualTo</operator><value><booleanValue>true</booleanValue></value></filters>
+    <outputAssignments><assignToReference>pickedEmail</assignToReference><field>Backup_Email__c</field></outputAssignments>
+  </dynamicChoiceSets>
+  <dynamicChoiceSets>
+    <name>TierChoices</name><dataType>Picklist</dataType><picklistObject>Customer__c</picklistObject><picklistField>Status__c</picklistField>
+  </dynamicChoiceSets>
+  <choices><name>FixedChoice</name><choiceText>Keep {!customer.Region__c}</choiceText><dataType>String</dataType><value><stringValue>keep</stringValue></value></choices>
+  <textTemplates><name>Summary</name><text>Owner note: {!customer.Summary__c}</text></textTemplates>
+</Flow>
