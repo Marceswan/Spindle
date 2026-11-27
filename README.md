@@ -6,7 +6,7 @@ Spindle replaces grep-and-read loops with single-call graph queries for Salesfor
 
 | | |
 |---|---|
-| **Status** | v1.2.0 — 299 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
+| **Status** | v1.3.0 — 299 tests passing and 1 skipped, 10 MCP tools live, Claude Code plugin with 4 skills and a SessionStart hook, GitHub Actions matrix release wired up |
 | **Headline** | On a 100-class synthetic corpus, returns answers in about 18% of the tokens a grep+read flow would use, about 60x faster. See [Bench headline](#bench-headline) for the method and its limits. |
 | **Distribution** | Single Bun-compiled binary per platform via GitHub Releases. Cross-compile to darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64 validated. Matrix build wired into `.github/workflows/release.yml`. |
 | **License** | MIT |

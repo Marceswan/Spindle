@@ -10,6 +10,10 @@ follow SemVer once a v1.0 binary ships.
 
 ## [Unreleased]
 
+---
+
+## [v1.3.0] — 2026-11-27
+
 ### Fixed
 
 - **Incremental reindex no longer drops edges.** A reparse deleted all nodes of the changed
